@@ -1,0 +1,22 @@
+[project]
+name = "jarvis"
+version = "0.1.0"
+description = "Offline-first, secure multi-device control hub"
+requires-python = ">=3.11"
+dependencies = ["cryptography>=42", "aiohttp>=3.9", "zeroconf>=0.130", "qrcode>=7.4"]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-asyncio"]
+
+[project.scripts]
+jarvis = "jarvis.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["jarvis*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
