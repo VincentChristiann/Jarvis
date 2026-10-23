@@ -77,6 +77,10 @@ class Mobile:
         r.add_get("/m/api/devices", self._devices)
         r.add_post("/m/api/send", self._send)
         r.add_post("/m/api/logout", self._logout)
+        r.add_get("/voice/{name}", self._voice_static)
+        r.add_get("/m/api/voice/status", self._voice_status)
+        r.add_post("/m/api/voice/session", self._voice_session)
+        r.add_post("/m/api/voice", self._voice)
         return app
 
     # ---- guard -------------------------------------------------------------
@@ -96,7 +100,8 @@ class Mobile:
         resp = await handler(request)
         resp.headers.update({
             "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer",
-            "Content-Security-Policy": CSP, "Strict-Transport-Security": "max-age=31536000"})
+            "Content-Security-Policy": CSP, "Strict-Transport-Security": "max-age=31536000",
+            "Permissions-Policy": "microphone=(self), camera=(), geolocation=()"})
         return resp
 
     def _session_device(self, request):
@@ -222,3 +227,36 @@ class Mobile:
         except Exception:
             return web.json_response({"ok": False, "error": "malformed"}, status=400)
         return web.json_response(await self.hub._route(request[DEV], target, cmd, args))
+
+    # ---- voice -------------------------------------------------------------------------------
+    async def _voice_static(self, request):
+        root = (Path(__file__).parent / "voice_web").resolve()
+        f = (root / request.match_info["name"]).resolve()
+        if f.parent != root or not f.is_file():
+            raise web.HTTPNotFound()
+        ctype = "application/javascript" if f.suffix == ".js" else "text/plain"
+        return web.Response(body=f.read_bytes(), content_type=ctype)
+
+    async def _voice_status(self, request):
+        me = request[DEV]
+        on = self.hub.voice.sessions.get(me["id"], 0) > time.time()
+        return web.json_response({**(await self.hub.voice.status()), "on": on})
+
+    async def _voice_session(self, request):
+        from .server import VoiceError
+        try:
+            b = await request.json()
+            return web.json_response(self.hub.voice.start_session(request[DEV], bool(b.get("on")), bool(b.get("renew"))))
+        except VoiceError as e:
+            return web.json_response({"error": str(e)}, status=e.status)
+
+    async def _voice(self, request):
+        from .server import MAX_BYTES, VoiceError, read_limited
+        try:
+            pcm = await read_limited(request, MAX_BYTES)
+            src = self.hub.voice.device_source(request[DEV])
+            out = await self.hub.voice.handle(src, pcm, request.headers.get("X-Jarvis-PTT") == "1",
+                                              request.headers.get("X-Jarvis-Target"))
+        except VoiceError as e:
+            return web.json_response({"ok": False, "error": str(e)}, status=e.status)
+        return web.json_response(out)

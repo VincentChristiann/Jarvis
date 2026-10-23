@@ -57,6 +57,7 @@ MODE_SENSORS = {
     "hologram": {"camera"},
     "voice": {"microphone"},
     "gesture+voice": {"camera", "microphone"},
+    "hologram+voice": {"camera", "microphone"},
 }
 CLASS_SENSORS = {
     "laptop": {"camera", "microphone"},

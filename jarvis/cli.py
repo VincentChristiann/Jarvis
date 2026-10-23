@@ -12,6 +12,7 @@ from .device.identity import Identity, PairingError, pair
 from .hub.server import Hub, hub_dir, init_hub
 from .paths import home_dir
 from .security.audit import AuditLog
+from .voice.engines import EngineUnavailable
 
 
 def _show_qr(text: str):
@@ -38,7 +39,7 @@ def _table(rows, cols):
 
 async def hub_serve(args):
     hub = Hub(args.home, host=args.host, pair_port=args.pair_port, ctl_port=args.ctl_port,
-              admin_port=args.admin_port, advertise=args.advertise, hub_class=args.hub_class)
+              admin_port=args.admin_port, advertise=args.advertise, hub_class=args.hub_class, voice_engine=args.voice_engine)
     await hub.start()
     print(f"hub running  pair:{hub.ports['pair']} control:{hub.ports['ctl']} admin(127.0.0.1):{hub.ports['admin']}")
     print(f"addresses: {', '.join(hub.addresses)}")
@@ -137,6 +138,8 @@ def build_parser():
     s.add_argument("--ctl-port", type=int, default=8444)
     s.add_argument("--hub-class", choices=["laptop", "desktop", "other"], default="laptop",
                    help="what this machine is; only laptops/desktops may use the camera")
+    s.add_argument("--voice-engine", choices=["auto", "pocketsphinx", "whisper", "off"], default="auto",
+                   help="speech recognition: auto uses Whisper if installed, else the bundled PocketSphinx")
     s.add_argument("--advertise", nargs="*", default=[], help="addresses to put in certificates and links (hotspot/overlay)")
     s = hub.add_parser("pair")
     s.add_argument("--role", default="phone", choices=["phone", "controller", "node"])
@@ -151,6 +154,12 @@ def build_parser():
 
     vis = sub.add_parser("vision", help="gesture tracking assets").add_subparsers(dest="vis_cmd", required=True)
     vis.add_parser("install", help="download and verify the hand-tracking files once (needs internet)")
+
+    vo = sub.add_parser("voice", help="speech recognition").add_subparsers(dest="voice_cmd", required=True)
+    s = vo.add_parser("install", help="optional: download the Whisper model (needs internet and `pip install faster-whisper`)")
+    s.add_argument("--engine", choices=["whisper"], default="whisper")
+    s.add_argument("--model", default="base.en")
+    vo.add_parser("check", help="show which speech engine the hub would use")
 
     svc = sub.add_parser("service", help="start Jarvis automatically").add_subparsers(dest="svc_cmd", required=True)
     for name in ("install", "uninstall"):
@@ -192,6 +201,14 @@ def main(argv=None):
             asyncio.run(hub_serve(args))
         elif args.group == "hub":
             asyncio.run(hub_cmd(args))
+        elif args.group == "voice":
+            from .voice import engines
+            if args.voice_cmd == "install":
+                print("downloading", args.model, "…")
+                print("installed at", engines.download_whisper(args.model))
+            else:
+                eng = engines.load_engine("auto")
+                print(f"speech engine: {eng.name}" if eng else "no speech engine available: pip install 'jarvis[voice]'")
         elif args.group == "vision":
             from . import vision_assets
             vision_assets.main()
@@ -203,7 +220,7 @@ def main(argv=None):
                 print(service.uninstall(args.role, args.system))
         else:
             asyncio.run(device_cmd(args))
-    except (PairingError, ConnectionError, aiohttp.ClientError, FileNotFoundError, RuntimeError, ValueError, PermissionError) as e:
+    except (PairingError, ConnectionError, aiohttp.ClientError, FileNotFoundError, RuntimeError, ValueError, PermissionError, ImportError, EngineUnavailable) as e:
         sys.exit(f"error: {e}")
     except KeyboardInterrupt:
         pass

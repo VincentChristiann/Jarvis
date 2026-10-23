@@ -54,14 +54,28 @@ class Agent:
             log.warning("command %s failed: %r", cmd, e)
             return {"ok": False, "error": "command failed"}
 
+    async def _hello(self, ws):
+        """Tell the hub which app *names* this device allows (so voice can recognise them). Never the commands."""
+        self._apps = sorted((self.ident.config.get("apps") or {}))
+        await ws.send_str(json.dumps({"type": "hello", "apps": self._apps}))
+
+    async def _hello_loop(self, ws):
+        while not ws.closed:
+            await asyncio.sleep(15)
+            self.ident.reload_config()
+            if sorted(self.ident.config.get("apps") or {}) != getattr(self, "_apps", None):
+                await self._hello(ws)
+
     async def run(self, stop: asyncio.Event | None = None):
-        delay = 1
+        delay, hello = 1, None
         async with aiohttp.ClientSession() as session:
             while not (stop and stop.is_set()):
                 try:
                     ws = await _connect(session, self.ident, "agent")
                     delay = 1
                     log.info("connected to hub")
+                    await self._hello(ws)
+                    hello = asyncio.create_task(self._hello_loop(ws))
                     if self.ident.days_left() < RENEW_DAYS:
                         await ws.send_str(json.dumps({"type": "renew", "csr": self.ident.renewal_csr()}))
                     async for msg in ws:
@@ -79,6 +93,9 @@ class Agent:
                             await ws.send_str(json.dumps({"type": "result", "id": data["id"], **res}))
                 except (ConnectionError, aiohttp.ClientError, OSError) as e:
                     log.info("disconnected (%s); retrying in %ss", e, delay)
+                finally:
+                    if hello:
+                        hello.cancel()
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, 30)
 

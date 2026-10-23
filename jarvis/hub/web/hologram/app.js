@@ -28,7 +28,20 @@ export class App {
     this.engine = new GestureEngine();
     this.devices = []; this.selected = null; this.map = {};
     this.scene = null; this.tracker = null; this.cursor = null;
-    this.lastHand = 0; this.timers = []; this.sig = "";
+    this.lastHand = 0; this.timers = []; this.sig = ""; this.voiceOn = false; this.voice = null;
+  }
+
+  // The one mode the hub should be in, given what is currently switched on here.
+  desiredMode(cam = !!this.tracker?.running) {
+    return cam && this.voiceOn ? "hologram+voice" : cam ? "hologram" : this.voiceOn ? "voice" : "idle";
+  }
+
+  // Called when something is switched OFF here. It may only lower the hub's mode, never raise it, so it can't
+  // undo the hub's kill switch.
+  async lowerMode() {
+    const m = await api("GET", "/admin/mode").catch(() => null);
+    if (!m || m.mode === "idle") return;
+    await api("POST", "/admin/mode", {mode: this.desiredMode()}).catch(() => {});
   }
 
   status(t) { $("status").textContent = t; }
@@ -45,6 +58,7 @@ export class App {
     await this.loadScene();
     await this.refreshDevices();
     this.timers.push(setInterval(() => this.refreshDevices(), POLL_MS));
+    this.setupVoice().catch(() => {});
     this.status("Ready. Pick a device with the mouse, or press Start camera to use your hand.");
     this.ready = true;
   }
@@ -77,7 +91,7 @@ export class App {
   async start() {
     if (this.tracker?.running) return;
     $("start").disabled = true;
-    const m = await api("POST", "/admin/mode", {mode: "hologram"});
+    const m = await api("POST", "/admin/mode", {mode: this.desiredMode(true)});
     if (m.error) { $("start").disabled = false; return this.status("Camera refused by the hub: " + m.error); }
     try {
       if (!this.tracker) {
@@ -88,14 +102,17 @@ export class App {
       }
       await this.tracker.startCamera();
     } catch (e) {
-      await api("POST", "/admin/mode", {mode: "idle"}).catch(() => {});
+      await this.lowerMode();
       $("start").disabled = false;
       return this.status("Could not start the camera: " + (e.message || e));
     }
     this.engine.reset(); this.lastHand = performance.now();
     $("lamp").className = "lamp on"; $("lamp-text").textContent = "CAMERA ON"; $("stop").hidden = false; $("start").hidden = true;
     this.status(`Tracking (${this.tracker.delegate}${this.tracker.face ? ", head" : ""}). Hand in view to begin.`);
-    this.timers.push(this._renew = setInterval(() => api("POST", "/admin/mode", {mode: "hologram"}).catch(() => {}), RENEW_MS));
+    this.timers.push(this._renew = setInterval(async () => {
+      const r = await api("POST", "/admin/mode", {mode: this.desiredMode(), renew: true}).catch(() => ({error: "x"}));
+      if (r.error && this.tracker?.running) this.stop("the hub turned the camera off");     // a renewal never revives what the hub switched off
+    }, RENEW_MS));
     this.timers.push(this._poll = setInterval(async () => {
       const m = await api("GET", "/admin/mode").catch(() => null);
       if (m && m.mode === "idle" && this.tracker?.running) this.stop("the hub turned the camera off");
@@ -111,7 +128,35 @@ export class App {
     const g = $("overlay").getContext("2d"); g.clearRect(0, 0, innerWidth, innerHeight);
     $("lamp").className = "lamp off"; $("lamp-text").textContent = "CAMERA OFF"; $("stop").hidden = true; $("start").hidden = false; $("start").disabled = false;
     this.status(`Camera off (${why}).`);
-    await api("POST", "/admin/mode", {mode: "idle"}).catch(() => {});
+    await this.lowerMode();
+  }
+
+  // ---- voice (shares the hub's microphone rules: only on while held / hands-free, and only in a matching mode) ----
+  async setupVoice() {
+    const st = await api("GET", "/admin/voice/status");
+    if (!st.available) { $("ptt").hidden = $("hf").hidden = true; return; }
+    const {Voice} = await import("/voice/voice.js");
+    this.voice = new Voice({
+      endpoint: "/admin/voice",
+      setSession: async (on, renew) => {
+        if (!on) { this.voiceOn = false; await this.lowerMode(); return true; }
+        if (!renew) this.voiceOn = true;
+        const r = await api("POST", "/admin/mode", {mode: this.desiredMode(), renew: !!renew});
+        return !r.error;
+      },
+      getTarget: () => this.selected,
+      onState: (s) => {
+        $("mic-lamp").hidden = !s.on;
+        $("ptt").classList.toggle("live", s.on && s.mode === "ptt"); $("hf").classList.toggle("live", s.on && s.mode === "hands-free");
+        $("hf").textContent = s.on && s.mode === "hands-free" ? "Stop listening" : "Hands-free";
+        if (!s.on) { this.voiceOn = false; if (s.why && s.why !== "done") $("voice-line").textContent = "Microphone off: " + s.why; }
+      },
+      onResult: (r) => { $("voice-line").textContent = (r.heard ? `"${r.heard}" — ` : "") + (r.reply || ""); },
+    });
+    const ptt = $("ptt");
+    ptt.onpointerdown = (e) => { e.preventDefault(); try { ptt.setPointerCapture(e.pointerId); } catch (_) { /* some browsers refuse; releasing still works */ } this.voice.pttDown().catch((err) => ($("voice-line").textContent = "Microphone: " + err.message)); };
+    ptt.onpointerup = ptt.onpointercancel = () => this.voice.pttUp();
+    $("hf").onclick = () => (this.voice.mode === "hands-free" ? this.voice.stop("stopped") : this.voice.startHandsFree().catch((err) => ($("voice-line").textContent = "Microphone: " + err.message)));
   }
 
   checkIdle(t) { if (t - this.lastHand > NO_HAND_STOP_MS) this.stop("no hand seen for a minute"); }

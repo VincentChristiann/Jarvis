@@ -32,8 +32,20 @@
     <div class="row">
       <span class="name">Mode: <b id="mode-name">idle</b> <span id="mode-left" class="hint"></span></span>
       <a class="btnlink" href="/hologram">Open hologram</a>
-      <button id="cam-off" class="danger" hidden>Turn camera off now</button>
+      <button id="cam-off" class="danger" hidden>Turn camera &amp; microphone off now</button>
     </div>
+  </section>
+  <section id="voice-card" hidden>
+    <h2>Voice</h2>
+    <p class="hint">The microphone is only open while you hold the button or have hands-free on. Hands-free only reacts after you say "Jarvis".</p>
+    <div class="row">
+      <label>Device <select id="voice-target"><option value="">Choose by voice ("…on the laptop")</option></select></label>
+      <button id="ptt">🎤 Hold to talk</button>
+      <button id="hf">Hands-free</button>
+    </div>
+    <div class="bar"><div id="level"></div></div>
+    <p id="voice-line" class="hint">Try: "next track", "volume up", "set volume to forty".</p>
+    <label class="hint"><input type="checkbox" id="speak" checked> Speak replies</label>
   </section>
   <section>
     <h2>Gesture actions</h2>

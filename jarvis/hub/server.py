@@ -22,6 +22,7 @@ from ..security import pki, policy
 from ..security.audit import AuditLog
 from ..security.ratelimit import FailureLimiter
 from ..security.registry import Registry
+from ..voice.service import MAX_BYTES, VoiceError, VoiceService
 from .mobile import Mobile
 from .pairing import PairingManager, sas_code
 
@@ -53,6 +54,21 @@ def _ctype(f: Path) -> str:
             ".css": "text/css", ".html": "text/html"}.get(f.suffix, "application/octet-stream")
 
 
+APP_NAME = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
+
+
+async def read_limited(request, limit: int) -> bytes:
+    """Read a request body, refusing to buffer more than `limit` bytes."""
+    if request.content_length is not None and request.content_length > limit:
+        raise VoiceError("audio too large", 413)
+    buf = bytearray()
+    async for chunk in request.content.iter_chunked(16384):
+        buf += chunk
+        if len(buf) > limit:
+            raise VoiceError("audio too large", 413)
+    return bytes(buf)
+
+
 def clean(s, n=64) -> str:
     return CLEAN.sub("", str(s))[:n] or "unnamed"
 
@@ -75,10 +91,12 @@ def init_hub(home=None):
 
 class Hub:
     def __init__(self, home=None, host="0.0.0.0", pair_port=8443, ctl_port=8444, admin_port=8445, mobile_port=8446,
-                 advertise=(), hub_class="laptop", cmd_timeout=CMD_TIMEOUT, pair_wait=PAIR_WAIT, confirm_timeout=CONFIRM_TIMEOUT):
+                 advertise=(), hub_class="laptop", voice_engine="auto", cmd_timeout=CMD_TIMEOUT, pair_wait=PAIR_WAIT, confirm_timeout=CONFIRM_TIMEOUT):
         self.dir = hub_dir(home)
         self.host, self.advertise = host, list(advertise)
         self.hub_class = hub_class
+        self._voice_engine = voice_engine
+        self.device_apps: dict[str, list[str]] = {}
         self.mode, self.mode_until = "idle", 0.0
         self.req_ports = (pair_port, ctl_port, admin_port, mobile_port)
         self.ports: dict[str, int] = {}
@@ -104,6 +122,7 @@ class Hub:
         self.registry = Registry(self.dir / "devices.json")
         self.audit = AuditLog(self.dir / "audit.log")
         self.addresses = self.advertise or local_addresses()
+        self.voice = VoiceService(self, self._voice_engine)
 
         # Fresh server key each start; the pairing pin is minted from it.
         skey = pki.new_key()
@@ -125,6 +144,9 @@ class Hub:
         r.add_post("/admin/login-code", self._a_login_code)
         r.add_get("/admin/audit", self._a_audit)
         r.add_get("/favicon.ico", self._nothing)
+        r.add_get("/voice/{name}", self._voice_static)
+        r.add_get("/admin/voice/status", self._a_voice_status)
+        r.add_post("/admin/voice", self._a_voice)
         r.add_get("/hologram", self._holo_page)
         r.add_get("/hologram/{name}", self._holo_file)
         r.add_get("/vendor/{path:.+}", self._vendor_file)
@@ -259,6 +281,10 @@ class Hub:
                     break
                 if kind_t == "cmd":
                     asyncio.create_task(self._handle_cmd(device_id, ws, data))
+                elif kind_t == "hello" and kind == "agent":
+                    apps = data.get("apps")
+                    if isinstance(apps, list) and len(apps) <= 50 and all(isinstance(a, str) and APP_NAME.match(a) for a in apps):
+                        self.device_apps[device_id] = apps
                 elif kind_t == "renew":
                     await self._renew(device_id, ws, data)
                 elif kind_t == "result" and kind == "agent":
@@ -268,6 +294,7 @@ class Hub:
         finally:
             if kind == "agent" and self.agents.get(device_id) is ws:
                 del self.agents[device_id]
+                self.device_apps.pop(device_id, None)
             self.clients.get(device_id, set()).discard(ws)
             self.audit.write("disconnected", device=device_id, kind=kind)
         return ws
@@ -428,7 +455,7 @@ class Hub:
             "; style-src 'self'; img-src 'self' data:" + ("; media-src blob:; worker-src 'self' blob:" if holo else "") +
             "; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
         # The camera is only available to the hologram page; every other page is denied it.
-        resp.headers["Permissions-Policy"] = ("camera=(self), " if holo else "camera=(), ") + "microphone=(), geolocation=()"
+        resp.headers["Permissions-Policy"] = ("camera=(self), " if holo else "camera=(), ") + "microphone=(self), geolocation=()"
         return resp
 
     def _session_ok(self, sid: str) -> bool:
@@ -501,11 +528,36 @@ class Hub:
             if not policy.sensor_allowed(self.hub_class, mode, sensor):
                 self.audit.write("mode_refused", mode=mode, sensor=sensor)
                 return web.json_response({"error": f"this device class ({self.hub_class}) may not use the {sensor}"}, status=403)
-        if mode == self.mode and mode != "idle":
-            self.mode_until = time.time() + policy.MODE_TTL      # renewal by the page, not logged
+        if b.get("renew"):
+            # A renewal only extends a mode that is still on. It can never switch one back on after the hub turned it off.
+            if mode != self.current_mode() or mode == "idle":
+                return web.json_response({"error": "not active", "mode": self.mode}, status=409)
+            self.mode_until = time.time() + policy.MODE_TTL      # not logged
         else:
             self._set_mode(mode, "operator")
+            if mode == "idle":
+                self.voice.end_all_sessions()                    # the kill switch also closes every phone's microphone
         return await self._a_mode_get(request)
+
+    # ---- voice ------------------------------------------------------------------
+    async def _voice_static(self, request):
+        f = (Path(__file__).parent / "voice_web" / request.match_info["name"]).resolve()
+        if f.parent != (Path(__file__).parent / "voice_web").resolve() or not f.is_file():
+            raise web.HTTPNotFound()
+        return web.Response(body=f.read_bytes(), content_type=_ctype(f))
+
+    async def _a_voice_status(self, request):
+        return web.json_response({**(await self.voice.status()), "mode": self.current_mode()})
+
+    async def _a_voice(self, request):
+        """The hub owner speaks. The microphone must be on (voice mode); high-risk commands still need confirmation."""
+        try:
+            pcm = await read_limited(request, MAX_BYTES)
+            out = await self.voice.handle(self.voice.operator_source(), pcm, request.headers.get("X-Jarvis-PTT") == "1",
+                                          request.headers.get("X-Jarvis-Target"))
+        except VoiceError as e:
+            return web.json_response({"ok": False, "error": str(e)}, status=e.status)
+        return web.json_response(out)
 
     # ---- hologram page, vendored assets ---------------------------------------
     async def _holo_page(self, request):
@@ -620,6 +672,7 @@ class Hub:
         if ok:
             self.audit.write("revoked", device=did)
             self._drop_grants(device_id=did)
+            self.voice.end_sessions_for(did)
             for ws in [self.agents.get(did), *self.clients.get(did, set())]:
                 if ws is not None:
                     await ws.close()

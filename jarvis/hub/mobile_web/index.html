@@ -25,6 +25,14 @@
   <section id="main-view" hidden>
     <h2>Devices</h2>
     <div id="devices"></div>
+      <h2>Voice</h2>
+      <div class="inline">
+        <button id="ptt">🎤 Hold to talk</button>
+        <button id="hf">Hands-free</button>
+      </div>
+      <div class="bar"><div id="level"></div></div>
+      <p id="voice-line" class="hint">Say a command, e.g. "next track" or "volume up". Hands-free only listens after you say "Jarvis".</p>
+      <label class="hint"><input type="checkbox" id="speak" checked> Speak replies</label>
     <div id="remote" hidden>
       <h2 id="remote-title"></h2>
       <div class="grid" id="quick"></div>

@@ -139,12 +139,47 @@ function renderMode(m) {
   $("cam-off").hidden = m.mode === "idle";
 }
 
+// ---- voice -----------------------------------------------------------------------------------
+let voice = null;
+async function setupVoice() {
+  const st = await api("GET", "/admin/voice/status");
+  if (!st.available) return;                     // no speech engine installed: the card stays hidden
+  $("voice-card").hidden = false;
+  const {Voice} = await import("/voice/voice.js");
+  const line = (t) => { $("voice-line").textContent = t; };
+  voice = new Voice({
+    endpoint: "/admin/voice",
+    setSession: async (on, renew) => !(await api("POST", "/admin/mode", {mode: on ? "voice" : "idle", renew: !!renew})).error,
+    getTarget: () => $("voice-target").value || null,
+    onLevel: (l) => { $("level").style.width = Math.min(100, l * 400) + "%"; },
+    onState: (s) => {
+      $("ptt").classList.toggle("live", s.on && s.mode === "ptt"); $("hf").classList.toggle("live", s.on && s.mode === "hands-free");
+      $("hf").textContent = s.on && s.mode === "hands-free" ? "Stop listening" : "Hands-free";
+      if (s.on) line(s.mode === "ptt" ? "Listening…" : 'Listening. Say "Jarvis, …"'); else { $("level").style.width = "0"; if (s.why && s.why !== "done") line("Microphone off: " + s.why); }
+    },
+    onResult: (r) => line((r.heard ? `Heard: "${r.heard}" — ` : "") + (r.reply || "")),
+  });
+  $("speak").onchange = () => { voice.speak = $("speak").checked; };
+  const ptt = $("ptt");
+  ptt.onpointerdown = (e) => { e.preventDefault(); try { ptt.setPointerCapture(e.pointerId); } catch (_) { /* some browsers refuse; releasing still works */ } voice.pttDown().catch((err) => line("Microphone: " + err.message)); };
+  ptt.onpointerup = ptt.onpointercancel = () => voice.pttUp();
+  $("hf").onclick = () => (voice.mode === "hands-free" ? voice.stop("stopped") : voice.startHandsFree().catch((err) => line("Microphone: " + err.message)));
+}
+
+function fillVoiceTargets(devs) {
+  const sel = $("voice-target"), cur = sel.value;
+  const want = devs.filter((d) => !d.revoked && d.kind !== "web");
+  if (sel.options.length - 1 === want.length && want.every((d, i) => sel.options[i + 1].value === d.id)) return;
+  sel.replaceChildren(el("option", {value: "", textContent: 'Choose by voice ("…on the laptop")'}), ...want.map((d) => el("option", {value: d.id, textContent: d.name})));
+  sel.value = cur;
+}
+
 async function refresh() {
   try {
     const [devs, pend, conf, audit, grants, mode] = await Promise.all([
       api("GET", "/admin/devices"), api("GET", "/admin/pending"),
       api("GET", "/admin/confirmations"), api("GET", "/admin/audit"), api("GET", "/admin/grants"), api("GET", "/admin/mode")]);
-    renderDevices(devs); renderPending(pend); renderConfirms(conf); renderAudit(audit); renderGrants(grants); renderMode(mode);
+    renderDevices(devs); renderPending(pend); renderConfirms(conf); renderAudit(audit); renderGrants(grants); renderMode(mode); fillVoiceTargets(devs);
   } catch (e) { /* auth failure already shown */ }
 }
 
@@ -163,6 +198,6 @@ $("pair-btn").onclick = async () => {
   }, 1000);
 };
 
-$("cam-off").onclick = async () => { renderMode(await api("POST", "/admin/mode", {mode: "idle"})); toast("Camera off"); };
+$("cam-off").onclick = async () => { renderMode(await api("POST", "/admin/mode", {mode: "idle"})); voice?.stop("turned off from the hub"); toast("Camera and microphone off"); };
 $("gesture-save").onclick = saveGestures;
-loadGestures(); refresh(); setInterval(refresh, 2000);
+loadGestures(); setupVoice().catch(() => {}); refresh(); setInterval(refresh, 2000);

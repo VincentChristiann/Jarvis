@@ -152,6 +152,33 @@ function setupPad() {
   pad.onpointercancel = () => { last = null; };
 }
 
+// ---- voice ----------------------------------------------------------------------------------
+let voice = null;
+async function setupVoice() {
+  const st = await (await fetch("/m/api/voice/status")).json().catch(() => ({}));
+  if (!st.available) { $("ptt").disabled = $("hf").disabled = true; $("voice-line").textContent = "Voice is not available on this hub (no speech engine installed)."; return; }
+  const {Voice} = await import("/voice/voice.js");
+  const line = (t) => { $("voice-line").textContent = t; };
+  voice = new Voice({
+    endpoint: "/m/api/voice",
+    setSession: async (on, renew) => (await post("/m/api/voice/session", {on, renew: !!renew})).status === 200,
+    getTarget: () => selected?.id,
+    onLevel: (l) => { $("level").style.width = Math.min(100, l * 400) + "%"; },
+    onState: (s) => {
+      $("ptt").classList.toggle("live", s.on && s.mode === "ptt"); $("hf").classList.toggle("live", s.on && s.mode === "hands-free");
+      $("hf").textContent = s.on && s.mode === "hands-free" ? "Stop listening" : "Hands-free";
+      if (s.on) line(s.mode === "ptt" ? "Listening…" : 'Listening. Say "Jarvis, …"'); else { $("level").style.width = "0"; if (s.why && s.why !== "done") line("Microphone off: " + s.why); }
+    },
+    onResult: (r) => line((r.heard ? `Heard: "${r.heard}" — ` : "") + (r.reply || "")),
+  });
+  $("speak").onchange = () => { voice.speak = $("speak").checked; };
+  const ptt = $("ptt");
+  ptt.onpointerdown = (e) => { e.preventDefault(); try { ptt.setPointerCapture(e.pointerId); } catch (_) { /* some browsers refuse; releasing still works */ } voice.pttDown().catch((err) => line("Microphone: " + err.message)); };
+  ptt.onpointerup = ptt.onpointercancel = () => voice.pttUp();
+  ptt.oncontextmenu = (e) => e.preventDefault();
+  $("hf").onclick = () => (voice.mode === "hands-free" ? voice.stop("stopped") : voice.startHandsFree().catch((err) => line("Microphone: " + err.message)));
+}
+
 // ---- start ----------------------------------------------------------------------------
 async function start() {
   if (!window.isSecureContext || !crypto?.subtle) {
@@ -169,11 +196,12 @@ async function start() {
   try { me = await login(dev); } catch (e) { return note("Sign-in failed: " + e.message + ". This phone may have been revoked on the hub."); }
   $("logout").hidden = false;
   show("main-view");
+  setupVoice().catch(() => {});
   await refreshDevices();
   setInterval(() => refreshDevices().catch(() => {}), 5000);
 }
 
-$("logout").onclick = async () => { await post("/m/api/logout"); location.reload(); };
+$("logout").onclick = async () => { await voice?.stop("signed out"); await post("/m/api/logout"); location.reload(); };
 $("send-text").onclick = async () => { const t = $("text"); if (t.value && (await run("input.type", {text: t.value})).ok) t.value = ""; };
 setupPad();
 start();
