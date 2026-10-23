@@ -9,7 +9,8 @@ from fnmatch import fnmatchcase
 
 import aiohttp
 
-from ..commands.builtin import HANDLERS
+from ..commands.builtin import HANDLERS, Context
+from ..commands.backend import BackendError
 from .identity import Identity
 
 RENEW_DAYS = 29  # just inside the hub's 30-day renewal window
@@ -21,29 +22,34 @@ async def _connect(session, ident: Identity, kind: str, hosts=None):
     for host in hosts or ident.hub["hosts"]:
         try:
             return await session.ws_connect(f"wss://{host}:{ident.hub['ctl']}/ws?kind={kind}",
-                                            ssl=ident.ssl_context(), heartbeat=20, max_msg_size=64 * 1024)
+                                            ssl=ident.ssl_context(), heartbeat=20, max_msg_size=8 * 1024 * 1024)
         except (aiohttp.ClientError, OSError) as e:
             last = e
     raise ConnectionError(f"hub unreachable: {last!r}")
 
 
 class Agent:
-    def __init__(self, ident: Identity):
+    def __init__(self, ident: Identity, ctx: Context | None = None):
         self.ident = ident
+        self.ctx = ctx or Context(config=ident.config)
 
     def local_allowed(self, cmd: str) -> bool:
         """The owner's own allow-list. The hub cannot override this."""
         return any(fnmatchcase(cmd, p) for p in self.ident.config.get("accept", []))
 
     async def execute(self, cmd: str, args: dict) -> dict:
+        self.ident.reload_config()          # `jarvis device allow ...` takes effect immediately
+        self.ctx.config = self.ident.config
         if not self.local_allowed(cmd):
             return {"ok": False, "error": "not enabled on this device"}
         handler = HANDLERS.get(cmd)
         if handler is None:
             return {"ok": False, "error": "unsupported command"}
         try:
-            data = await asyncio.get_running_loop().run_in_executor(None, handler, args)
+            data = await asyncio.get_running_loop().run_in_executor(None, handler, args, self.ctx)
             return {"ok": True, "data": data}
+        except (ValueError, FileNotFoundError, BackendError) as e:
+            return {"ok": False, "error": str(e)[:200]}      # our own validation messages: safe to show
         except Exception as e:
             log.warning("command %s failed: %r", cmd, e)
             return {"ok": False, "error": "command failed"}
@@ -78,10 +84,11 @@ class Agent:
 
 
 class Client:
-    """Send commands to the hub (and through it to other devices) as this device."""
+    """Send commands to the hub (and through it to other devices) as this device. Many may be in flight."""
 
     def __init__(self, ident: Identity):
         self.ident = ident
+        self._waiting: dict[str, asyncio.Future] = {}
 
     async def __aenter__(self):
         self._session = aiohttp.ClientSession()
@@ -90,21 +97,37 @@ class Client:
         except BaseException:
             await self._session.close()
             raise
+        self._reader = asyncio.create_task(self._read())
         return self
 
     async def __aexit__(self, *exc):
+        self._reader.cancel()
         await self._ws.close()
         await self._session.close()
 
+    async def _read(self):
+        try:
+            async for msg in self._ws:
+                if msg.type != aiohttp.WSMsgType.TEXT:
+                    break
+                data = json.loads(msg.data)
+                fut = self._waiting.pop(data.get("id"), None)
+                if fut and not fut.done():
+                    fut.set_result(data)
+        finally:
+            for fut in self._waiting.values():
+                if not fut.done():
+                    fut.set_exception(ConnectionError("connection closed"))
+            self._waiting.clear()
+
     async def send(self, target: str, cmd: str, args: dict | None = None, timeout=60) -> dict:
         rid = uuid.uuid4().hex
+        fut = asyncio.get_running_loop().create_future()
+        self._waiting[rid] = fut
         await self._ws.send_str(json.dumps({
             "type": "cmd", "id": rid, "target": target, "cmd": cmd, "args": args or {},
             "ts": time.time(), "nonce": secrets.token_hex(16)}))
-        while True:
-            msg = await asyncio.wait_for(self._ws.receive(), timeout)
-            if msg.type != aiohttp.WSMsgType.TEXT:
-                raise ConnectionError("connection closed")
-            data = json.loads(msg.data)
-            if data.get("id") == rid:
-                return data
+        try:
+            return await asyncio.wait_for(fut, timeout)
+        finally:
+            self._waiting.pop(rid, None)

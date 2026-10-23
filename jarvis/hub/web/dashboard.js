@@ -27,9 +27,9 @@ function btn(label, cls, fn) {
   return el("button", {textContent: label, class: cls || "", onclick: fn});
 }
 
-async function sendCmd(id, cmd, risky) {
+async function sendCmd(id, cmd, risky, args) {
   if (risky && !confirm(`Run ${cmd} on this device?`)) return;
-  const r = await api("POST", "/admin/send", {target: id, cmd, args: {}});
+  const r = await api("POST", "/admin/send", {target: id, cmd, args: args || {}});
   toast(r.ok ? `${cmd}: ok` : `${cmd}: ${r.error}`);
 }
 
@@ -44,6 +44,10 @@ function renderDevices(list) {
         el("span", {class: "hint", textContent: `  ${d.class} · ${d.role}${d.revoked ? " · REVOKED" : ""}`})));
     if (!d.revoked) {
       row.append(btn("Ping", "", () => sendCmd(d.id, "ping")));
+      row.append(btn("⏯", "", () => sendCmd(d.id, "media.play_pause")));
+      row.append(btn("⏭", "", () => sendCmd(d.id, "media.next")));
+      row.append(btn("Vol −", "", () => sendCmd(d.id, "volume.step", false, {delta: -5})));
+      row.append(btn("Vol +", "", () => sendCmd(d.id, "volume.step", false, {delta: 5})));
       row.append(btn("Lock", "", () => sendCmd(d.id, "system.lock", true)));
       row.append(btn("Revoke", "danger", async () => {
         if (!confirm(`Revoke ${d.name}? It will be disconnected and must re-pair.`)) return;
@@ -78,6 +82,16 @@ function renderConfirms(list) {
   }
 }
 
+function renderGrants(list) {
+  $("grant-card").hidden = !list.length;
+  const box = $("grants"); box.replaceChildren();
+  for (const g of list) {
+    box.append(el("div", {class: "row"},
+      el("span", {class: "name", textContent: `${g.sender} → ${g.target}: ${g.family}.*  (${Math.floor(g.expires_in / 60)}m ${g.expires_in % 60}s left)`}),
+      btn("Close now", "danger", async () => { await api("POST", "/admin/grant-close", {id: g.id}); refresh(); })));
+  }
+}
+
 function renderAudit(a) {
   const chain = $("chain");
   chain.textContent = a.ok ? "audit log intact" : "AUDIT LOG TAMPERED";
@@ -92,10 +106,10 @@ function renderAudit(a) {
 
 async function refresh() {
   try {
-    const [devs, pend, conf, audit] = await Promise.all([
+    const [devs, pend, conf, audit, grants] = await Promise.all([
       api("GET", "/admin/devices"), api("GET", "/admin/pending"),
-      api("GET", "/admin/confirmations"), api("GET", "/admin/audit")]);
-    renderDevices(devs); renderPending(pend); renderConfirms(conf); renderAudit(audit);
+      api("GET", "/admin/confirmations"), api("GET", "/admin/audit"), api("GET", "/admin/grants")]);
+    renderDevices(devs); renderPending(pend); renderConfirms(conf); renderAudit(audit); renderGrants(grants);
   } catch (e) { /* auth failure already shown */ }
 }
 

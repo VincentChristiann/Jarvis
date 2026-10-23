@@ -28,6 +28,7 @@ PAIR_WAIT = 90
 CMD_TIMEOUT = 30
 CONFIRM_TIMEOUT = 30
 VIA = web.RequestKey("via", str)
+CTL_MAX_MSG = 8 * 1024 * 1024  # fits a 4 MB file after base64
 WEB = Path(__file__).parent / "web"
 SESSION_TTL = 8 * 3600
 LOGIN_CODE_TTL = 60
@@ -82,6 +83,8 @@ class Hub:
         self.confirmations: dict[str, dict] = {}
         self.nonces: dict[str, float] = {}
         self.sessions: dict[str, float] = {}
+        self.grants: dict[tuple, float] = {}
+        self._grant_wait: dict[tuple, asyncio.Future] = {}
         self.login_codes: dict[str, float] = {}
         self._runners = []
 
@@ -114,6 +117,8 @@ class Hub:
         r.add_post("/admin/login-code", self._a_login_code)
         r.add_get("/admin/audit", self._a_audit)
         r.add_post("/admin/send", self._a_send)
+        r.add_get("/admin/grants", self._a_grants)
+        r.add_post("/admin/grant-close", self._a_grant_close)
         r.add_post("/admin/invite", self._a_invite)
         r.add_get("/admin/pending", self._a_pending)
         r.add_post("/admin/resolve", self._a_resolve)
@@ -212,7 +217,7 @@ class Hub:
         if fp == dev["cert_fp"]:
             self.registry.confirm_cert(device_id)  # the renewed cert works, so the old one can go
         kind = "agent" if request.query.get("kind") == "agent" else "client"
-        ws = web.WebSocketResponse(heartbeat=20, max_msg_size=64 * 1024)
+        ws = web.WebSocketResponse(heartbeat=20, max_msg_size=CTL_MAX_MSG)
         await ws.prepare(request)
         if kind == "agent":
             old = self.agents.get(device_id)
@@ -307,6 +312,10 @@ class Hub:
             if not await self._confirm(sender, target_id, cmd):
                 self.audit.write("cmd_denied", sender=sid, target=target_id, cmd=cmd, why="not confirmed")
                 return {"ok": False, "error": "denied: not confirmed by operator"}
+        if decision.verdict == "grant" and not operator:
+            if not await self._ensure_grant(sender, target_id, cmd):
+                self.audit.write("cmd_denied", sender=sid, target=target_id, cmd=cmd, why="control window not approved")
+                return {"ok": False, "error": "denied: control window not approved by operator"}
         self.audit.write("cmd_allowed", sender=sid, target=target_id, cmd=cmd)
         if target_id == "hub":
             return {"ok": True, "data": self._hub_command(cmd)}
@@ -330,6 +339,32 @@ class Hub:
             return [{"id": d["id"], "name": d["name"], "platform": d["platform"], "class": d["class"],
                      "online": d["id"] in self.agents} for d in self.registry.all() if not d["revoked"]]
         raise ValueError(cmd)
+
+    async def _ensure_grant(self, sender, target_id, cmd) -> bool:
+        """One operator approval opens a time-boxed control window for sender -> target -> command family."""
+        key = (sender["id"], target_id, policy.family(cmd))
+        if self.grants.get(key, 0) > time.time():
+            return True
+        waiting = self._grant_wait.get(key)
+        if waiting is not None:          # a burst of cursor moves must not stack up prompts
+            return await asyncio.shield(waiting)
+        fut = asyncio.get_running_loop().create_future()
+        self._grant_wait[key] = fut
+        try:
+            ok = await self._confirm(sender, target_id, f"{key[2]}.* control for {policy.GRANT_TTL // 60} min")
+            if ok:
+                self.grants[key] = time.time() + policy.GRANT_TTL
+                self.audit.write("grant_opened", sender=sender["id"], target=target_id, family=key[2])
+            fut.set_result(ok)
+            return ok
+        finally:
+            self._grant_wait.pop(key, None)
+
+    def _drop_grants(self, device_id=None, key=None):
+        for k in list(self.grants):
+            if k == key or (device_id and device_id in k[:2]):
+                del self.grants[k]
+                self.audit.write("grant_closed", sender=k[0], target=k[1], family=k[2])
 
     async def _confirm(self, sender, target_id, cmd) -> bool:
         cid = uuid.uuid4().hex[:8]
@@ -412,6 +447,21 @@ class Hub:
         ok, bad = AuditLog.verify(path)
         return web.json_response({"ok": ok, "bad": bad, "entries": AuditLog.tail(path, 40)})
 
+    async def _a_grants(self, request):
+        now = time.time()
+        name = lambda i: (self.registry.get(i) or {}).get("name", i)
+        return web.json_response([
+            {"id": ":".join(k), "sender": name(k[0]), "target": name(k[1]), "family": k[2], "expires_in": int(t - now)}
+            for k, t in self.grants.items() if t > now])
+
+    async def _a_grant_close(self, request):
+        b = await request.json()
+        for k in list(self.grants):
+            if ":".join(k) == b.get("id"):
+                self._drop_grants(key=k)
+                return web.json_response({"ok": True})
+        return web.json_response({"ok": False})
+
     async def _a_send(self, request):
         """The hub owner runs a command from the dashboard. Device-side allow-lists still apply."""
         b = await request.json()
@@ -454,6 +504,7 @@ class Hub:
         ok = self.registry.revoke(did)
         if ok:
             self.audit.write("revoked", device=did)
+            self._drop_grants(device_id=did)
             for ws in [self.agents.get(did), *self.clients.get(did, set())]:
                 if ws is not None:
                     await ws.close()

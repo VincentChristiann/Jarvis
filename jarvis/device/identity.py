@@ -100,3 +100,9 @@ class Identity:
         if cert.public_key().public_numbers() != key.public_key().public_numbers() or pki.cert_cn(cert) != self.device_id:
             raise PairingError("renewed certificate does not match this device")
         write_private(self.dir / "cert.pem", pem.encode())
+
+    def reload_config(self):
+        self.config = read_json(self.dir / "config.json", {"accept": DEFAULT_LOCAL_ACCEPT})
+
+    def save_config(self):
+        write_json(self.dir / "config.json", self.config)

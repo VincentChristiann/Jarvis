@@ -96,6 +96,21 @@ async def device_cmd(args):
         from .device.agent import Agent
         print("agent running; ctrl-c to stop")
         await Agent(Identity(args.home)).run()
+    elif c in ("allow", "disallow", "config", "app"):
+        from .device import localconfig as lc
+        ident = Identity(args.home)
+        if c == "allow":
+            print("accepting:", lc.allow(ident, args.patterns))
+        elif c == "disallow":
+            print("accepting:", lc.disallow(ident, args.patterns))
+        elif c == "app":
+            if args.app_cmd == "add":
+                lc.app_add(ident, args.name, args.argv)
+            else:
+                lc.app_remove(ident, args.name)
+            print("apps:", ident.config.get("apps", {}))
+        else:
+            print(json.dumps(ident.config, indent=2))
     elif c == "send":
         from .device.agent import Client
         extra = dict(kv.split("=", 1) for kv in args.arg)
@@ -141,6 +156,14 @@ def build_parser():
     s.add_argument("--name", required=True)
     s.add_argument("--class", dest="cls", choices=["laptop", "desktop", "phone", "other"], default="laptop")
     dev.add_parser("run")
+    dev.add_parser("config", help="show what this device accepts")
+    for name in ("allow", "disallow"):
+        dev.add_parser(name, help=f"{name} command families on this device, e.g. input.* files.*").add_argument("patterns", nargs="+")
+    app = dev.add_parser("app", help="apps the hub may launch on this device").add_subparsers(dest="app_cmd", required=True)
+    s = app.add_parser("add")
+    s.add_argument("name")
+    s.add_argument("argv", nargs="+", help="program and arguments")
+    app.add_parser("remove").add_argument("name")
     s = dev.add_parser("send")
     s.add_argument("target", help="device id or 'hub'")
     s.add_argument("command")
@@ -166,7 +189,7 @@ def main(argv=None):
                 print(service.uninstall(args.role, args.system))
         else:
             asyncio.run(device_cmd(args))
-    except (PairingError, ConnectionError, aiohttp.ClientError, FileNotFoundError, RuntimeError, ValueError) as e:
+    except (PairingError, ConnectionError, aiohttp.ClientError, FileNotFoundError, RuntimeError, ValueError, PermissionError) as e:
         sys.exit(f"error: {e}")
     except KeyboardInterrupt:
         pass
