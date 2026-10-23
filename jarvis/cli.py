@@ -58,6 +58,15 @@ async def hub_cmd(args):
         _show_qr(r["url"])
         print(f"\nRole: {r['role']}  expires in {r['expires_in']}s\nLink: {r['url']}\n")
         print("Then run `jarvis hub pending` and `jarvis hub approve <id>` after checking the code matches.")
+    elif c == "dashboard":
+        r = await _admin(args, "POST", "/admin/login-code")
+        url = f"http://127.0.0.1:{args.admin_port}/login?code={r['code']}"
+        print(f"Open this link in a browser on THIS machine (valid {r['expires_in']}s, one use):\n{url}")
+        try:
+            import webbrowser
+            webbrowser.open(url)
+        except Exception:
+            pass
     elif c == "pending":
         _table(await _admin(args, "GET", "/admin/pending"), ["id", "name", "platform", "class", "role", "sas", "ip"])
     elif c in ("approve", "reject"):
@@ -110,12 +119,21 @@ def build_parser():
     s = hub.add_parser("pair")
     s.add_argument("--role", default="phone", choices=["phone", "controller", "node"])
     s.add_argument("--host", nargs="*", help="override the addresses shown in the link")
-    for name in ("pending", "devices", "confirms"):
+    for name in ("pending", "devices", "confirms", "dashboard"):
         hub.add_parser(name)
     for name in ("approve", "reject", "revoke", "allow", "deny"):
         hub.add_parser(name).add_argument("id")
     s = hub.add_parser("audit")
     s.add_argument("-n", type=int, default=20)
+
+    svc = sub.add_parser("service", help="start Jarvis automatically").add_subparsers(dest="svc_cmd", required=True)
+    for name in ("install", "uninstall"):
+        s = svc.add_parser(name)
+        s.add_argument("role", choices=["hub", "device"])
+        s.add_argument("--system", action="store_true", help="Linux: system-wide unit (needs root and --user)")
+        s.add_argument("--user", help="Linux system unit: account to run as")
+        if name == "install":
+            s.add_argument("--dry-run", action="store_true")
 
     dev = sub.add_parser("device").add_subparsers(dest="dev_cmd", required=True)
     s = dev.add_parser("pair")
@@ -140,9 +158,15 @@ def main(argv=None):
             asyncio.run(hub_serve(args))
         elif args.group == "hub":
             asyncio.run(hub_cmd(args))
+        elif args.group == "service":
+            from . import service
+            if args.svc_cmd == "install":
+                print(service.install(args.role, str(home_dir(args.home)), args.system, args.user, args.dry_run))
+            else:
+                print(service.uninstall(args.role, args.system))
         else:
             asyncio.run(device_cmd(args))
-    except (PairingError, ConnectionError, aiohttp.ClientError, FileNotFoundError) as e:
+    except (PairingError, ConnectionError, aiohttp.ClientError, FileNotFoundError, RuntimeError, ValueError) as e:
         sys.exit(f"error: {e}")
     except KeyboardInterrupt:
         pass

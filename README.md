@@ -14,9 +14,14 @@ jarvis hub approve <id>
 jarvis device run                     # keep this running on every device
 jarvis device send <device-id> ping
 ```
+`jarvis hub dashboard` opens the web dashboard (approve devices, see the QR, run commands, view activity) on the hub machine.
+
+Start automatically at boot/login: `jarvis service install hub` or `jarvis service install device` (systemd on Linux, Task Scheduler on Windows; `--dry-run` shows what it would do).
+
 Other hub commands: `devices`, `revoke <id>`, `confirms` / `allow <id>` / `deny <id>` (high-risk commands), `audit`.
 
 Run tests: `pip install -e .[dev] && pytest`.
 
 ## Status
-Phase 1 done: secure pairing, mutual-TLS control channel, role-based permissions, audit log, mDNS, Linux hotspot helper. Not yet built: web UI, gestures/hologram, voice, natural language, installers/boot services, Windows hotspot, certificate auto-renewal.
+Done: secure pairing, mutual-TLS control channel, role-based permissions, audit log, certificate auto-renewal, boot services (Linux/Windows), hub web dashboard, mDNS, Linux hotspot helper.
+Not yet: dashboard access from phones (needs client-cert design), gestures/hologram, voice, natural language, Windows hotspot automation, more control commands (media, apps, files).

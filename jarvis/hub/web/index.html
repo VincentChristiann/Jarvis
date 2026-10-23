@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Jarvis Hub</title>
+<link rel="stylesheet" href="/dashboard.css">
+</head>
+<body>
+<header><h1>Jarvis</h1><span id="chain" class="pill"></span></header>
+<main>
+  <section id="confirm-card" hidden>
+    <h2>Needs your confirmation</h2><div id="confirms"></div>
+  </section>
+  <section id="pending-card" hidden>
+    <h2>Pairing requests</h2>
+    <p class="hint">Approve only if the code below matches the code on the new device.</p>
+    <div id="pending"></div>
+  </section>
+  <section>
+    <h2>Devices</h2>
+    <div id="devices"></div>
+  </section>
+  <section>
+    <h2>Pair a new device</h2>
+    <label>Role
+      <select id="role"><option>phone</option><option>controller</option><option>node</option></select>
+    </label>
+    <button id="pair-btn">Show QR</button>
+    <div id="pair-out" hidden>
+      <img id="qr" alt="Pairing QR code" width="220" height="220">
+      <p class="hint">Expires in <b id="ttl"></b>s. The link is secret until used.</p>
+      <input id="link" readonly>
+    </div>
+  </section>
+  <section>
+    <h2>Recent activity</h2>
+    <div id="audit" class="log"></div>
+  </section>
+</main>
+<div id="toast" hidden></div>
+<script src="/dashboard.js"></script>
+</body>
+</html>

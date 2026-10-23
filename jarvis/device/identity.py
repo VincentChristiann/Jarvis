@@ -1,5 +1,6 @@
 """Device identity on disk, and the pairing client."""
 import asyncio
+import datetime
 import sys
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -83,3 +84,19 @@ class Identity:
 
     def ssl_context(self):
         return pki.client_context((self.dir / "ca.pem").read_bytes(), self.dir / "cert.pem", self.dir / "key.pem")
+
+    def days_left(self) -> float:
+        cert = pki.load_cert((self.dir / "cert.pem").read_bytes())
+        return (cert.not_valid_after_utc - datetime.datetime.now(datetime.timezone.utc)).total_seconds() / 86400
+
+    def renewal_csr(self) -> str:
+        """CSR over the existing key, so installing the new certificate is a single atomic file swap."""
+        key = pki.load_key((self.dir / "key.pem").read_bytes())
+        return pki.make_csr(key).public_bytes(serialization.Encoding.PEM).decode()
+
+    def install_cert(self, pem: str):
+        cert = pki.load_cert(pem.encode())
+        key = pki.load_key((self.dir / "key.pem").read_bytes())
+        if cert.public_key().public_numbers() != key.public_key().public_numbers() or pki.cert_cn(cert) != self.device_id:
+            raise PairingError("renewed certificate does not match this device")
+        write_private(self.dir / "cert.pem", pem.encode())

@@ -38,13 +38,20 @@ Jarvis can run commands on your machines, so every design choice defaults to den
 ## Sensors (camera and microphone)
 - Sensors are **off by default** and only allowed in a matching mode (for example `gesture` for the camera). Phones can never use the camera, and each device class has its own allowed sensors. The rule is `policy.sensor_allowed`. It is enforced when the vision and voice phases arrive.
 
+## Dashboard
+- Served by the admin listener on `127.0.0.1` only, so it is reachable from the hub machine and nowhere else.
+- Login is a **one-time link** from `jarvis hub dashboard` (valid 60 s, burned on any attempt). It sets an `HttpOnly`, `SameSite=Strict` session cookie valid 8 h.
+- State-changing requests need a custom header (blocks cross-site forms), the `Host` header must be `127.0.0.1` or `localhost` (blocks DNS rebinding), and a strict CSP forbids inline scripts, framing and outside connections. Page content is built with `textContent`, never `innerHTML`.
+- The dashboard operator is still bound by the command catalog and each device's own allow-list.
+- **Phones and other devices cannot open the dashboard yet.** A phone browser would need a client certificate installed to reach it safely. That is a separate design (planned), so nothing sensitive is exposed to the network in the meantime.
+
 ## Remote access (outside the local network)
 - **No port forwarding, ever.** Remote access goes only through a private overlay network (WireGuard, or Tailscale if you prefer a managed one) that joins your own devices. The hub binds to that interface in addition to the LAN.
 - The overlay only provides reachability. The same mutual TLS, pairing and permission checks apply, so it adds no extra trust. Someone who got onto the overlay still needs a hub-issued certificate.
 - This is configured per hub with `--advertise <overlay address>`. A guided WireGuard setup is planned for phase 6.
 
 ## Known limits
-- Certificates last 90 days and **automatic renewal is not built yet** (planned for phase 2). Until then, re-pair a device when its certificate expires.
+- Device certificates last 90 days and renew automatically in the last 30 days (same key). The hub keeps the previous certificate valid until the new one first connects, so a crash mid-renewal cannot lock a device out. A device that stays offline past expiry must re-pair.
 - Hub restarts drop outstanding pairing invitations (intentional).
 - Anyone with root or administrator access to the hub can read the CA key. Protect the hub with disk encryption and a lock-screen password.
 - The CA key is not yet passphrase-encrypted. Hardware-backed storage (TPM or OS keyring) is planned.

@@ -12,6 +12,7 @@ import aiohttp
 from ..commands.builtin import HANDLERS
 from .identity import Identity
 
+RENEW_DAYS = 29  # just inside the hub's 30-day renewal window
 log = logging.getLogger("jarvis.device")
 
 
@@ -55,11 +56,19 @@ class Agent:
                     ws = await _connect(session, self.ident, "agent")
                     delay = 1
                     log.info("connected to hub")
+                    if self.ident.days_left() < RENEW_DAYS:
+                        await ws.send_str(json.dumps({"type": "renew", "csr": self.ident.renewal_csr()}))
                     async for msg in ws:
                         if msg.type != aiohttp.WSMsgType.TEXT:
                             break
                         data = json.loads(msg.data)
-                        if data.get("type") == "exec":
+                        if data.get("type") == "renewed":
+                            if data.get("ok"):
+                                self.ident.install_cert(data["cert"])
+                                log.info("certificate renewed")
+                            else:
+                                log.warning("certificate renewal refused by hub")
+                        elif data.get("type") == "exec":
                             res = await self.execute(data["cmd"], data.get("args", {}))
                             await ws.send_str(json.dumps({"type": "result", "id": data["id"], **res}))
                 except (ConnectionError, aiohttp.ClientError, OSError) as e:

@@ -1,6 +1,8 @@
 """The hub: pairing endpoint (TLS, pinned), control endpoint (mutual TLS), admin API (localhost)."""
 import asyncio
+import base64
 import hmac
+import io
 import json
 import re
 import secrets
@@ -8,8 +10,12 @@ import time
 import uuid
 
 import ifaddr
+import qrcode
+import qrcode.image.svg
 from aiohttp import WSMsgType, web
 from cryptography import x509
+
+from pathlib import Path
 
 from ..paths import home_dir, private_dir, write_private
 from ..security import pki, policy
@@ -21,6 +27,11 @@ from .pairing import PairingManager, sas_code
 PAIR_WAIT = 90
 CMD_TIMEOUT = 30
 CONFIRM_TIMEOUT = 30
+VIA = web.RequestKey("via", str)
+WEB = Path(__file__).parent / "web"
+SESSION_TTL = 8 * 3600
+LOGIN_CODE_TTL = 60
+RENEW_WINDOW = 30 * 86400
 MAX_SKEW = 30
 NONCE_TTL = 120
 CLEAN = re.compile(r"[^\w .@\-()]")
@@ -70,6 +81,8 @@ class Hub:
         self.inflight: dict[str, tuple[asyncio.Future, str]] = {}
         self.confirmations: dict[str, dict] = {}
         self.nonces: dict[str, float] = {}
+        self.sessions: dict[str, float] = {}
+        self.login_codes: dict[str, float] = {}
         self._runners = []
 
     # ---- lifecycle -------------------------------------------------------
@@ -94,6 +107,13 @@ class Hub:
         ctl_app.router.add_get("/ws", self._ws)
         admin_app = web.Application(middlewares=[self._admin_auth], client_max_size=64 * 1024)
         r = admin_app.router
+        r.add_get("/", self._web_index)
+        r.add_get("/dashboard.js", self._web_static)
+        r.add_get("/dashboard.css", self._web_static)
+        r.add_get("/login", self._login)
+        r.add_post("/admin/login-code", self._a_login_code)
+        r.add_get("/admin/audit", self._a_audit)
+        r.add_post("/admin/send", self._a_send)
         r.add_post("/admin/invite", self._a_invite)
         r.add_get("/admin/pending", self._a_pending)
         r.add_post("/admin/resolve", self._a_resolve)
@@ -185,9 +205,12 @@ class Hub:
         cert = x509.load_der_x509_certificate(der)
         device_id = pki.cert_cn(cert)
         dev = self.registry.get(device_id)
-        if not dev or dev["revoked"] or dev["cert_fp"] != pki.fingerprint(cert):
+        fp = pki.fingerprint(cert)
+        if not dev or dev["revoked"] or fp not in (dev["cert_fp"], dev.get("prev_fp")):
             self.audit.write("connect_denied", device=device_id, ip=request.remote)
             raise web.HTTPForbidden()
+        if fp == dev["cert_fp"]:
+            self.registry.confirm_cert(device_id)  # the renewed cert works, so the old one can go
         kind = "agent" if request.query.get("kind") == "agent" else "client"
         ws = web.WebSocketResponse(heartbeat=20, max_msg_size=64 * 1024)
         await ws.prepare(request)
@@ -210,6 +233,8 @@ class Hub:
                     break
                 if kind_t == "cmd":
                     asyncio.create_task(self._handle_cmd(device_id, ws, data))
+                elif kind_t == "renew":
+                    await self._renew(device_id, ws, data)
                 elif kind_t == "result" and kind == "agent":
                     entry = self.inflight.get(data.get("id"))
                     if entry and entry[1] == device_id and not entry[0].done():
@@ -220,6 +245,21 @@ class Hub:
             self.clients.get(device_id, set()).discard(ws)
             self.audit.write("disconnected", device=device_id, kind=kind)
         return ws
+
+    async def _renew(self, device_id: str, ws, data: dict):
+        """Issue a fresh certificate (same identity, same key) to a device that is close to expiry."""
+        dev = self.registry.get(device_id)
+        try:
+            if dev["expires_at"] - time.time() > RENEW_WINDOW:
+                raise ValueError("not due for renewal")
+            csr = pki.validate_csr(str(data["csr"]).encode())
+            cert = pki.sign_csr(self.ca_cert, self.ca_key, csr, device_id)
+        except Exception as e:
+            self.audit.write("renew_denied", device=device_id, why=str(e)[:80])
+            return await ws.send_str(json.dumps({"type": "renewed", "ok": False, "error": "renewal refused"}))
+        self.registry.rotate_cert(device_id, pki.fingerprint(cert), cert.not_valid_after_utc.timestamp())
+        self.audit.write("renewed", device=device_id)
+        await ws.send_str(json.dumps({"type": "renewed", "ok": True, "cert": pki.cert_pem(cert).decode()}))
 
     def _fresh(self, sender: str, data: dict) -> bool:
         now = time.time()
@@ -238,50 +278,52 @@ class Hub:
 
     async def _handle_cmd(self, sender_id: str, ws, data: dict):
         rid = data.get("id")
-
-        async def reply(ok, **kw):
-            if not ws.closed:
-                await ws.send_str(json.dumps({"type": "result", "id": rid, "ok": ok, **kw}))
-
         try:
-            sender = self.registry.get(sender_id)
             cmd, target_id, args = data.get("cmd"), data.get("target"), data.get("args", {})
             if not (isinstance(cmd, str) and isinstance(target_id, str) and isinstance(args, dict)):
-                return await reply(False, error="malformed command")
-            if not self._fresh(sender_id, data):
+                res = {"ok": False, "error": "malformed command"}
+            elif not self._fresh(sender_id, data):
                 self.audit.write("cmd_denied", sender=sender_id, cmd=cmd, why="stale or replayed")
-                return await reply(False, error="stale or replayed command")
-            target = None if target_id == "hub" else self.registry.get(target_id)
-            if target_id != "hub" and target is None:
-                return await reply(False, error="unknown target")
-            decision = policy.authorize(sender, target, cmd)
-            if decision.verdict == "deny":
-                self.audit.write("cmd_denied", sender=sender_id, target=target_id, cmd=cmd, why=decision.reason)
-                return await reply(False, error=f"denied: {decision.reason}")
-            if decision.verdict == "confirm":
-                if not await self._confirm(sender, target_id, cmd):
-                    self.audit.write("cmd_denied", sender=sender_id, target=target_id, cmd=cmd, why="not confirmed")
-                    return await reply(False, error="denied: not confirmed by operator")
-            self.audit.write("cmd_allowed", sender=sender_id, target=target_id, cmd=cmd)
-            if target_id == "hub":
-                return await reply(True, data=self._hub_command(cmd))
-            agent = self.agents.get(target_id)
-            if agent is None or agent.closed:
-                return await reply(False, error="target offline")
-            fid = uuid.uuid4().hex
-            fut = asyncio.get_running_loop().create_future()
-            self.inflight[fid] = (fut, target_id)
-            try:
-                await agent.send_str(json.dumps({"type": "exec", "id": fid, "from": sender_id, "cmd": cmd, "args": args}))
-                result = await asyncio.wait_for(fut, self.cmd_timeout)
-            except asyncio.TimeoutError:
-                return await reply(False, error="target timed out")
-            finally:
-                self.inflight.pop(fid, None)
-            await reply(bool(result.get("ok")), **{k: result[k] for k in ("data", "error") if k in result})
+                res = {"ok": False, "error": "stale or replayed command"}
+            else:
+                res = await self._route(self.registry.get(sender_id), target_id, cmd, args)
         except Exception:
             self.audit.write("cmd_error", sender=sender_id)
-            await reply(False, error="internal error")
+            res = {"ok": False, "error": "internal error"}
+        if not ws.closed:
+            await ws.send_str(json.dumps({"type": "result", "id": rid, **res}))
+
+    async def _route(self, sender: dict, target_id: str, cmd: str, args: dict, operator=False) -> dict:
+        """Authorize and deliver one command. `operator` = the hub owner acting locally (skips confirm)."""
+        sid = sender["id"]
+        target = None if target_id == "hub" else self.registry.get(target_id)
+        if target_id != "hub" and target is None:
+            return {"ok": False, "error": "unknown target"}
+        decision = policy.authorize(sender, target, cmd)
+        if decision.verdict == "deny":
+            self.audit.write("cmd_denied", sender=sid, target=target_id, cmd=cmd, why=decision.reason)
+            return {"ok": False, "error": f"denied: {decision.reason}"}
+        if decision.verdict == "confirm" and not operator:
+            if not await self._confirm(sender, target_id, cmd):
+                self.audit.write("cmd_denied", sender=sid, target=target_id, cmd=cmd, why="not confirmed")
+                return {"ok": False, "error": "denied: not confirmed by operator"}
+        self.audit.write("cmd_allowed", sender=sid, target=target_id, cmd=cmd)
+        if target_id == "hub":
+            return {"ok": True, "data": self._hub_command(cmd)}
+        agent = self.agents.get(target_id)
+        if agent is None or agent.closed:
+            return {"ok": False, "error": "target offline"}
+        fid = uuid.uuid4().hex
+        fut = asyncio.get_running_loop().create_future()
+        self.inflight[fid] = (fut, target_id)
+        try:
+            await agent.send_str(json.dumps({"type": "exec", "id": fid, "from": sid, "cmd": cmd, "args": args}))
+            result = await asyncio.wait_for(fut, self.cmd_timeout)
+        except asyncio.TimeoutError:
+            return {"ok": False, "error": "target timed out"}
+        finally:
+            self.inflight.pop(fid, None)
+        return {"ok": bool(result.get("ok")), **{k: result[k] for k in ("data", "error") if k in result}}
 
     def _hub_command(self, cmd):
         if cmd == "hub.devices":
@@ -306,10 +348,77 @@ class Hub:
     # ---- admin API (127.0.0.1 only, bearer token) ------------------------
     @web.middleware
     async def _admin_auth(self, request, handler):
+        # DNS-rebinding defence: a hostile web page must not be able to talk to this port by name.
+        if request.headers.get("Host", "").rsplit(":", 1)[0] not in ("127.0.0.1", "localhost"):
+            raise web.HTTPForbidden()
+        if request.path == "/login":
+            return await handler(request)
         supplied = request.headers.get("Authorization", "").removeprefix("Bearer ")
-        if not hmac.compare_digest(supplied.encode(), self.admin_token.encode()):
+        if supplied and hmac.compare_digest(supplied.encode(), self.admin_token.encode()):
+            request[VIA] = "bearer"
+        elif self._session_ok(request.cookies.get("jarvis_session", "")):
+            request[VIA] = "session"
+            if request.method != "GET" and request.headers.get("X-Jarvis") != "1":
+                raise web.HTTPForbidden()  # a cross-site form cannot set custom headers
+        else:
             raise web.HTTPUnauthorized()
-        return await handler(request)
+        resp = await handler(request)
+        resp.headers["Cache-Control"] = "no-store"
+        resp.headers["X-Content-Type-Options"] = "nosniff"
+        resp.headers["Referrer-Policy"] = "no-referrer"
+        resp.headers["Content-Security-Policy"] = (
+            "default-src 'none'; script-src 'self'; style-src 'self'; img-src data:; "
+            "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
+        return resp
+
+    def _session_ok(self, sid: str) -> bool:
+        now = time.time()
+        for k in [k for k, t in self.sessions.items() if t < now]:
+            del self.sessions[k]
+        return bool(sid) and any(hmac.compare_digest(sid, k) for k in self.sessions)
+
+    async def _login(self, request):
+        code = request.query.get("code", "")
+        now = time.time()
+        valid = [k for k, t in self.login_codes.items() if t > now and hmac.compare_digest(code, k)]
+        self.login_codes.clear()  # any attempt burns outstanding codes
+        if not code or not valid:
+            self.audit.write("dashboard_login_failed")
+            raise web.HTTPForbidden(text="invalid or expired login link")
+        sid = secrets.token_urlsafe(32)
+        self.sessions[sid] = now + SESSION_TTL
+        self.audit.write("dashboard_login")
+        resp = web.HTTPFound("/")
+        resp.set_cookie("jarvis_session", sid, max_age=SESSION_TTL, httponly=True, samesite="Strict", path="/")
+        raise resp
+
+    async def _a_login_code(self, request):
+        if request[VIA] != "bearer":
+            raise web.HTTPForbidden()
+        code = secrets.token_urlsafe(24)
+        self.login_codes[code] = time.time() + LOGIN_CODE_TTL
+        return web.json_response({"code": code, "expires_in": LOGIN_CODE_TTL})
+
+    async def _web_index(self, request):
+        return web.Response(body=(WEB / "index.html").read_bytes(), content_type="text/html")
+
+    async def _web_static(self, request):
+        name = request.path.lstrip("/")
+        ctype = "application/javascript" if name.endswith(".js") else "text/css"
+        return web.Response(body=(WEB / name).read_bytes(), content_type=ctype)
+
+    async def _a_audit(self, request):
+        path = self.dir / "audit.log"
+        ok, bad = AuditLog.verify(path)
+        return web.json_response({"ok": ok, "bad": bad, "entries": AuditLog.tail(path, 40)})
+
+    async def _a_send(self, request):
+        """The hub owner runs a command from the dashboard. Device-side allow-lists still apply."""
+        b = await request.json()
+        if not (isinstance(b.get("cmd"), str) and isinstance(b.get("target"), str) and isinstance(b.get("args", {}), dict)):
+            return web.json_response({"ok": False, "error": "malformed"}, status=400)
+        operator = {"id": "operator", "name": "operator", "can_send": ["*"], "revoked": False}
+        return web.json_response(await self._route(operator, b["target"], b["cmd"], b.get("args", {}), operator=True))
 
     async def _a_invite(self, request):
         body = await request.json()
@@ -321,7 +430,10 @@ class Hub:
         url = (f"jarvis://pair?host={','.join(hosts)}&port={self.ports['pair']}&ctl={self.ports['ctl']}"
                f"&token={token}&pin={self.pair_pin}")
         self.audit.write("invite_created", role=role)
-        return web.json_response({"url": url, "expires_in": 120, "role": role})
+        svg = io.BytesIO()
+        qrcode.make(url, image_factory=qrcode.image.svg.SvgPathImage, border=2).save(svg)
+        qr = "data:image/svg+xml;base64," + base64.b64encode(svg.getvalue()).decode()
+        return web.json_response({"url": url, "expires_in": 120, "role": role, "qr": qr})
 
     async def _a_pending(self, request):
         return web.json_response([

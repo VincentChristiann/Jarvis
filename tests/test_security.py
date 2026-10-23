@@ -265,3 +265,36 @@ def test_secret_files_are_owner_only(tmp_path):
     for f in hub_dir(tmp_path).iterdir():
         if os.name == "posix":
             assert stat.S_IMODE(f.stat().st_mode) == 0o600, f.name
+
+
+async def test_certificate_renewal(hub, tmp_path):
+    from jarvis.device.identity import Identity
+    node = await pair_device(hub, tmp_path, "pc1", "node", "desktop")
+    phone = await pair_device(hub, tmp_path, "ph", "phone", "phone")
+    # Shrink the node's certificate to 5 days to simulate nearing expiry.
+    key = pki.load_key((node.dir / "key.pem").read_bytes())
+    short = pki.sign_csr(hub.ca_cert, hub.ca_key, pki.make_csr(key), node.device_id, days=5)
+    (node.dir / "cert.pem").write_bytes(pki.cert_pem(short))
+    hub.registry._d[node.device_id]["cert_fp"] = pki.fingerprint(short)
+    hub.registry._d[node.device_id]["expires_at"] = short.not_valid_after_utc.timestamp()
+    node = Identity(tmp_path / "pc1")
+    assert node.days_left() < 6
+    agent = asyncio.create_task(Agent(node).run())
+    try:
+        for _ in range(100):
+            if Identity(tmp_path / "pc1").days_left() > 80:
+                break
+            await asyncio.sleep(0.05)
+        renewed = Identity(tmp_path / "pc1")
+        assert renewed.days_left() > 80
+        assert hub.registry.get(node.device_id)["cert_fp"] == pki.fingerprint(pki.load_cert((renewed.dir / "cert.pem").read_bytes()))
+        async with Client(renewed) as c:                         # new cert connects, which retires the old fingerprint
+            assert (await c.send("hub", "hub.devices"))["ok"]
+        assert "prev_fp" not in hub.registry.get(node.device_id)
+    finally:
+        agent.cancel()
+    # A device that is not near expiry is refused renewal.
+    async with aiohttp.ClientSession() as s:
+        ws = await s.ws_connect(f"wss://127.0.0.1:{hub.ports['ctl']}/ws?kind=client", ssl=phone.ssl_context())
+        await ws.send_str(json.dumps({"type": "renew", "csr": phone.renewal_csr()}))
+        assert json.loads((await ws.receive()).data)["ok"] is False

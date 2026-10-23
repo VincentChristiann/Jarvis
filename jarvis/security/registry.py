@@ -34,3 +34,14 @@ class Registry:
         d["revoked"] = True
         self._save()
         return True
+
+    def rotate_cert(self, device_id, new_fp, expires_at):
+        """Accept the new certificate; keep the old one valid until the new one is first used."""
+        d = self._d[device_id]
+        d["prev_fp"], d["cert_fp"], d["expires_at"] = d["cert_fp"], new_fp, expires_at
+        self._save()
+
+    def confirm_cert(self, device_id):
+        d = self._d[device_id]
+        if d.pop("prev_fp", None) is not None:
+            self._save()
