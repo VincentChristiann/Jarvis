@@ -1,0 +1,23 @@
+:root{--bg:#0b1020;--card:#121a30;--line:#22305a;--fg:#e6ecff;--dim:#8a97bd;--ok:#3ddc97;--bad:#ff5c7a;--acc:#4cc9f0}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.4 system-ui,sans-serif;padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)}
+header{display:flex;align-items:center;gap:10px;padding:14px 16px;border-bottom:1px solid var(--line)}
+h1{margin:0;font-size:18px;letter-spacing:.12em;color:var(--acc);flex:1}
+h2{margin:18px 0 8px;font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--dim)}
+main{padding:8px 16px 32px;max-width:520px;margin:0 auto}
+section{margin-bottom:8px}
+.hint{color:var(--dim);font-size:13px}
+button,input{font:inherit;color:var(--fg);background:#1b2850;border:1px solid var(--line);border-radius:10px;padding:12px}
+input{background:#0b1020;width:100%}
+button{cursor:pointer;min-height:46px}button:active{border-color:var(--acc)}
+button[disabled]{opacity:.35}button.go{border-color:var(--ok);color:var(--ok)}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px;margin:8px 0}
+.inline{display:flex;gap:8px}.inline button{width:90px}
+.dev{display:flex;align-items:center;gap:10px;width:100%;text-align:left;margin-bottom:8px}
+.dev.sel{border-color:var(--acc)}
+.dot{width:10px;height:10px;border-radius:50%;background:var(--dim)}.dot.on{background:var(--ok)}
+#pad{height:230px;background:#0e1630;border:1px dashed var(--line);border-radius:14px;touch-action:none;display:flex;align-items:center;justify-content:center;user-select:none}
+.sas{font:700 40px ui-monospace,monospace;letter-spacing:.12em;color:var(--acc);text-align:center;margin:12px 0}
+#msg{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px;margin-top:12px}
+#toast{position:fixed;bottom:18px;left:16px;right:16px;max-width:488px;margin:auto;background:var(--card);border:1px solid var(--acc);padding:12px 16px;border-radius:10px;text-align:center}
+ol{padding-left:20px}a{color:var(--acc)}

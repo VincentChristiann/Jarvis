@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0b1020">
+<title>Jarvis</title>
+<link rel="stylesheet" href="/m/app.css">
+</head>
+<body>
+<header><h1>Jarvis</h1><span id="who" class="hint"></span><button id="logout" hidden>Sign out</button></header>
+<main>
+  <section id="msg" hidden></section>
+
+  <section id="pair-view" hidden>
+    <h2>Pair this phone</h2>
+    <label>Name for this phone <input id="pair-name" maxlength="40" autocomplete="off"></label>
+    <button id="pair-go" class="go">Pair</button>
+    <div id="sas-box" hidden>
+      <p class="hint">Check this code matches the one on the hub, then approve it there.</p>
+      <div id="sas" class="sas"></div>
+    </div>
+  </section>
+
+  <section id="main-view" hidden>
+    <h2>Devices</h2>
+    <div id="devices"></div>
+    <div id="remote" hidden>
+      <h2 id="remote-title"></h2>
+      <div class="grid" id="quick"></div>
+      <h2>Touchpad</h2>
+      <div id="pad" aria-label="Touchpad"><span class="hint">Drag to move · tap to click</span></div>
+      <div class="grid">
+        <button data-cmd="input.click" data-args='{"button":"left"}'>Left click</button>
+        <button data-cmd="input.click" data-args='{"button":"right"}'>Right click</button>
+        <button data-cmd="input.scroll" data-args='{"amount":3}'>Scroll ↑</button>
+        <button data-cmd="input.scroll" data-args='{"amount":-3}'>Scroll ↓</button>
+      </div>
+      <h2>Keyboard</h2>
+      <div class="inline"><input id="text" maxlength="200" placeholder="Type here, then Send" autocomplete="off"><button id="send-text">Send</button></div>
+      <div class="grid keys" id="keys"></div>
+    </div>
+  </section>
+
+  <section id="help" hidden>
+    <h2>Before you pair</h2>
+    <ol>
+      <li>Open <a id="ca-link" href="/ca.pem">the hub's certificate</a> and install it as a trusted CA on this phone.</li>
+      <li>Check its SHA-256 fingerprint matches the one on the hub's dashboard.</li>
+      <li>Then scan the pairing QR from the hub again.</li>
+    </ol>
+  </section>
+</main>
+<div id="toast" hidden></div>
+<script src="/m/app.js"></script>
+</body>
+</html>

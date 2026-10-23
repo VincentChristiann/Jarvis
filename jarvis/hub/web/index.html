@@ -28,6 +28,9 @@
   </section>
   <section>
     <h2>Pair a new device</h2>
+    <label>Type
+      <select id="kind"><option value="app">Jarvis app / computer</option><option value="web">Phone browser</option></select>
+    </label>
     <label>Role
       <select id="role"><option>phone</option><option>controller</option><option>node</option></select>
     </label>
@@ -36,6 +39,10 @@
       <img id="qr" alt="Pairing QR code" width="220" height="220">
       <p class="hint">Expires in <b id="ttl"></b>s. The link is secret until used.</p>
       <input id="link" readonly>
+      <div id="ca-box" hidden>
+        <p class="hint">The phone must trust this hub first: open <b id="ca-url"></b>, install the certificate, and check its SHA-256 fingerprint is:</p>
+        <input id="ca-fp" readonly>
+      </div>
     </div>
   </section>
   <section>

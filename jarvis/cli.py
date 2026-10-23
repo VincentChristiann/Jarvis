@@ -54,8 +54,11 @@ async def hub_serve(args):
 async def hub_cmd(args):
     c = args.hub_cmd
     if c == "pair":
-        r = await _admin(args, "POST", "/admin/invite", {"role": args.role, "hosts": args.host or None})
+        r = await _admin(args, "POST", "/admin/invite", {"role": args.role, "hosts": args.host or None,
+                                                         "kind": "web" if args.web else "app"})
         _show_qr(r["url"])
+        if args.web:
+            print(f"Phone browser: first install the hub certificate from {r['ca_url']}\nand check its SHA-256 fingerprint is {r['ca_fp']}")
         print(f"\nRole: {r['role']}  expires in {r['expires_in']}s\nLink: {r['url']}\n")
         print("Then run `jarvis hub pending` and `jarvis hub approve <id>` after checking the code matches.")
     elif c == "dashboard":
@@ -134,6 +137,7 @@ def build_parser():
     s = hub.add_parser("pair")
     s.add_argument("--role", default="phone", choices=["phone", "controller", "node"])
     s.add_argument("--host", nargs="*", help="override the addresses shown in the link")
+    s.add_argument("--web", action="store_true", help="pair a phone browser instead of a Jarvis app")
     for name in ("pending", "devices", "confirms", "dashboard"):
         hub.add_parser(name)
     for name in ("approve", "reject", "revoke", "allow", "deny"):

@@ -115,9 +115,11 @@ async function refresh() {
 
 let ttlTimer;
 $("pair-btn").onclick = async () => {
-  const r = await api("POST", "/admin/invite", {role: $("role").value});
+  const r = await api("POST", "/admin/invite", {role: $("role").value, kind: $("kind").value});
   if (r.error) return toast(r.error);
   $("qr").src = r.qr; $("link").value = r.url; $("pair-out").hidden = false;
+  $("ca-box").hidden = $("kind").value !== "web";
+  $("ca-url").textContent = r.ca_url; $("ca-fp").value = r.ca_fp;
   let left = r.expires_in; $("ttl").textContent = left;
   clearInterval(ttlTimer);
   ttlTimer = setInterval(() => {

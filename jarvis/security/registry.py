@@ -21,6 +21,15 @@ class Registry:
         }
         self._save()
 
+    def add_web(self, device_id, name, role, pubkey_b64, can_send, accepts):
+        """A browser paired by public key. It has no certificate and never opens the mTLS channel."""
+        self._d[device_id] = {
+            "id": device_id, "name": name, "platform": "browser", "class": "phone", "kind": "web",
+            "role": role, "pubkey": pubkey_b64, "cert_fp": "", "paired_at": time.time(),
+            "expires_at": 4102444800, "revoked": False, "can_send": list(can_send), "accepts": list(accepts),
+        }
+        self._save()
+
     def get(self, device_id):
         return self._d.get(device_id)
 

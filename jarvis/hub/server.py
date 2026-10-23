@@ -22,6 +22,7 @@ from ..security import pki, policy
 from ..security.audit import AuditLog
 from ..security.ratelimit import FailureLimiter
 from ..security.registry import Registry
+from .mobile import Mobile
 from .pairing import PairingManager, sas_code
 
 PAIR_WAIT = 90
@@ -68,11 +69,11 @@ def init_hub(home=None):
 
 
 class Hub:
-    def __init__(self, home=None, host="0.0.0.0", pair_port=8443, ctl_port=8444, admin_port=8445,
+    def __init__(self, home=None, host="0.0.0.0", pair_port=8443, ctl_port=8444, admin_port=8445, mobile_port=8446,
                  advertise=(), cmd_timeout=CMD_TIMEOUT, pair_wait=PAIR_WAIT, confirm_timeout=CONFIRM_TIMEOUT):
         self.dir = hub_dir(home)
         self.host, self.advertise = host, list(advertise)
-        self.req_ports = (pair_port, ctl_port, admin_port)
+        self.req_ports = (pair_port, ctl_port, admin_port, mobile_port)
         self.ports: dict[str, int] = {}
         self.cmd_timeout, self.pair_wait, self.confirm_timeout = cmd_timeout, pair_wait, confirm_timeout
         self.pairing = PairingManager()
@@ -131,6 +132,7 @@ class Hub:
             ("pair", pair_app, self.req_ports[0], pair_ctx, self.host),
             ("ctl", ctl_app, self.req_ports[1], ctl_ctx, self.host),
             ("admin", admin_app, self.req_ports[2], None, "127.0.0.1"),
+            ("mobile", Mobile(self).app(), self.req_ports[3], pair_ctx, self.host),
         ):
             runner = web.AppRunner(app)
             await runner.setup()
@@ -477,13 +479,17 @@ class Hub:
             return web.json_response({"error": "unknown role"}, status=400)
         token = self.pairing.create_invite(role)
         hosts = body.get("hosts") or self.addresses
-        url = (f"jarvis://pair?host={','.join(hosts)}&port={self.ports['pair']}&ctl={self.ports['ctl']}"
-               f"&token={token}&pin={self.pair_pin}")
-        self.audit.write("invite_created", role=role)
+        if body.get("kind") == "web":
+            url = f"https://{hosts[0]}:{self.ports['mobile']}/m#pair={token}"
+        else:
+            url = (f"jarvis://pair?host={','.join(hosts)}&port={self.ports['pair']}&ctl={self.ports['ctl']}"
+                   f"&token={token}&pin={self.pair_pin}")
+        self.audit.write("invite_created", role=role, kind=body.get("kind", "app"))
         svg = io.BytesIO()
         qrcode.make(url, image_factory=qrcode.image.svg.SvgPathImage, border=2).save(svg)
         qr = "data:image/svg+xml;base64," + base64.b64encode(svg.getvalue()).decode()
-        return web.json_response({"url": url, "expires_in": 120, "role": role, "qr": qr})
+        return web.json_response({"url": url, "expires_in": 120, "role": role, "qr": qr,
+                                  "ca_fp": pki.fingerprint(self.ca_cert), "ca_url": f"https://{hosts[0]}:{self.ports['mobile']}/ca.pem"})
 
     async def _a_pending(self, request):
         return web.json_response([

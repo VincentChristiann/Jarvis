@@ -10,7 +10,7 @@ from jarvis.hub.server import Hub, init_hub
 @pytest_asyncio.fixture
 async def hub(tmp_path):
     init_hub(tmp_path / "hub_home")
-    h = Hub(tmp_path / "hub_home", host="127.0.0.1", pair_port=0, ctl_port=0, admin_port=0,
+    h = Hub(tmp_path / "hub_home", host="127.0.0.1", pair_port=0, ctl_port=0, admin_port=0, mobile_port=0,
             advertise=["127.0.0.1"], cmd_timeout=3, pair_wait=3, confirm_timeout=2)
     await h.start()
     yield h
