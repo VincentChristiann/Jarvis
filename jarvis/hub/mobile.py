@@ -71,7 +71,7 @@ class Mobile:
         r.add_get("/m/app.js", self._static)
         r.add_get("/m/app.css", self._static)
         r.add_get("/ca.pem", self._ca)
-        r.add_get("/favicon.ico", lambda request: web.Response(status=204))
+        r.add_get("/favicon.ico", self._nothing)
         r.add_post("/m/pair", self._pair)
         r.add_get("/m/challenge", self._challenge)
         r.add_post("/m/login", self._login)
@@ -117,6 +117,9 @@ class Mobile:
         name = request.path.rsplit("/", 1)[1]
         ctype = "application/javascript" if name.endswith(".js") else "text/css"
         return web.Response(body=(WEB / name).read_bytes(), content_type=ctype)
+
+    async def _nothing(self, request):
+        return web.Response(status=204)
 
     async def _ca(self, request):
         return web.Response(body=pki.cert_pem(self.hub.ca_cert), content_type="application/x-pem-file",
