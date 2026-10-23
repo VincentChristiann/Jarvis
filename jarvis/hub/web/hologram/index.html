@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Jarvis Hologram</title>
+<link rel="stylesheet" href="/hologram/hologram.css">
+</head>
+<body>
+<video id="cam" playsinline muted></video>
+<canvas id="gl"></canvas>
+<canvas id="overlay"></canvas>
+
+<div id="hud">
+  <div id="lamp" class="lamp off"><span class="dot"></span><span id="lamp-text">CAMERA OFF</span></div>
+  <div id="banner" hidden></div>
+  <div id="status"></div>
+  <div id="action"></div>
+  <div class="buttons">
+    <button id="start">Start camera</button>
+    <button id="stop" hidden>Stop camera (Esc)</button>
+    <a href="/" class="link">Dashboard</a>
+  </div>
+  <details id="help">
+    <summary>Gestures</summary>
+    <ul>
+      <li><b>Move</b> your index finger to aim, <b>pinch</b> (thumb + index) to press.</li>
+      <li><b>Swipe</b> an open hand: right = next, left = previous, up/down = volume.</li>
+      <li><b>Hold open palm</b> = play/pause · <b>hold fist</b> = mute.</li>
+      <li><b>Cursor mode</b>: your finger moves the other computer's mouse, pinch clicks, two fingers scroll, hold a fist to leave.</li>
+    </ul>
+  </details>
+</div>
+<script type="module" src="/hologram/app.js"></script>
+</body>
+</html>

@@ -99,3 +99,45 @@ def authorize(sender: dict, target: dict | None, cmd: str) -> Decision:
     if risk == SESSION:
         return Decision("grant", "needs an approved control window")
     return Decision("allow")
+
+
+# ---- gesture bindings --------------------------------------------------------
+GESTURES = ("swipe_left", "swipe_right", "swipe_up", "swipe_down", "hold_open_palm", "hold_fist", "hold_peace", "hold_point")
+DEFAULT_GESTURE_MAP = {
+    "swipe_right": {"cmd": "media.next", "args": {}},
+    "swipe_left": {"cmd": "media.previous", "args": {}},
+    "swipe_up": {"cmd": "volume.step", "args": {"delta": 10}},
+    "swipe_down": {"cmd": "volume.step", "args": {"delta": -10}},
+    "hold_open_palm": {"cmd": "media.play_pause", "args": {}},
+    "hold_fist": {"cmd": "volume.mute", "args": {}},
+    "hold_peace": None,
+    "hold_point": None,
+}
+MODE_TTL = 300  # camera/mic modes expire on their own unless the page keeps renewing them
+
+
+# Gestures fire by accident, so only these harmless, easily undone commands may be bound to them.
+BINDABLE = frozenset({"media.play_pause", "media.next", "media.previous", "volume.set", "volume.step",
+                      "volume.mute", "ping", "notify"})
+
+
+def bindable(cmd: str) -> bool:
+    return cmd in BINDABLE and cmd in CATALOG
+
+
+def validate_gesture_map(m) -> dict:
+    import json
+    if not isinstance(m, dict) or set(m) - set(GESTURES):
+        raise ValueError("unknown gesture")
+    out = {g: None for g in GESTURES}
+    for g, b in m.items():
+        if b is None:
+            continue
+        if not (isinstance(b, dict) and isinstance(b.get("cmd"), str) and isinstance(b.get("args", {}), dict)):
+            raise ValueError(f"bad binding for {g}")
+        if not bindable(b["cmd"]):
+            raise ValueError(f"{b['cmd']} cannot be bound to a gesture")
+        if len(json.dumps(b.get("args", {}))) > 300:
+            raise ValueError("arguments too large")
+        out[g] = {"cmd": b["cmd"], "args": b.get("args", {})}
+    return out

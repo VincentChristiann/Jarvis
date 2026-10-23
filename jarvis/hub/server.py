@@ -48,6 +48,11 @@ def local_addresses() -> list[str]:
     return out
 
 
+def _ctype(f: Path) -> str:
+    return {".js": "application/javascript", ".mjs": "application/javascript", ".wasm": "application/wasm",
+            ".css": "text/css", ".html": "text/html"}.get(f.suffix, "application/octet-stream")
+
+
 def clean(s, n=64) -> str:
     return CLEAN.sub("", str(s))[:n] or "unnamed"
 
@@ -70,9 +75,11 @@ def init_hub(home=None):
 
 class Hub:
     def __init__(self, home=None, host="0.0.0.0", pair_port=8443, ctl_port=8444, admin_port=8445, mobile_port=8446,
-                 advertise=(), cmd_timeout=CMD_TIMEOUT, pair_wait=PAIR_WAIT, confirm_timeout=CONFIRM_TIMEOUT):
+                 advertise=(), hub_class="laptop", cmd_timeout=CMD_TIMEOUT, pair_wait=PAIR_WAIT, confirm_timeout=CONFIRM_TIMEOUT):
         self.dir = hub_dir(home)
         self.host, self.advertise = host, list(advertise)
+        self.hub_class = hub_class
+        self.mode, self.mode_until = "idle", 0.0
         self.req_ports = (pair_port, ctl_port, admin_port, mobile_port)
         self.ports: dict[str, int] = {}
         self.cmd_timeout, self.pair_wait, self.confirm_timeout = cmd_timeout, pair_wait, confirm_timeout
@@ -117,6 +124,15 @@ class Hub:
         r.add_get("/login", self._login)
         r.add_post("/admin/login-code", self._a_login_code)
         r.add_get("/admin/audit", self._a_audit)
+        r.add_get("/favicon.ico", self._nothing)
+        r.add_get("/hologram", self._holo_page)
+        r.add_get("/hologram/{name}", self._holo_file)
+        r.add_get("/vendor/{path:.+}", self._vendor_file)
+        r.add_get("/admin/mode", self._a_mode_get)
+        r.add_post("/admin/mode", self._a_mode_set)
+        r.add_get("/admin/vision", self._a_vision)
+        r.add_get("/admin/gesture-map", self._a_gmap_get)
+        r.add_post("/admin/gesture-map", self._a_gmap_set)
         r.add_post("/admin/send", self._a_send)
         r.add_get("/admin/grants", self._a_grants)
         r.add_post("/admin/grant-close", self._a_grant_close)
@@ -140,9 +156,12 @@ class Hub:
             await site.start()
             self.ports[name] = site._server.sockets[0].getsockname()[1]
             self._runners.append(runner)
+        self._mode_task = asyncio.create_task(self._mode_watch())
         self.audit.write("hub_started", ports=self.ports)
 
     async def stop(self):
+        if getattr(self, "_mode_task", None):
+            self._mode_task.cancel()
         for ws in list(self.agents.values()):
             await ws.close()
         for runner in self._runners:
@@ -403,9 +422,13 @@ class Hub:
         resp.headers["Cache-Control"] = "no-store"
         resp.headers["X-Content-Type-Options"] = "nosniff"
         resp.headers["Referrer-Policy"] = "no-referrer"
+        holo = request.path.startswith(("/hologram", "/vendor"))
         resp.headers["Content-Security-Policy"] = (
-            "default-src 'none'; script-src 'self'; style-src 'self'; img-src data:; "
-            "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
+            "default-src 'none'; script-src 'self'" + (" 'wasm-unsafe-eval'" if holo else "") +
+            "; style-src 'self'; img-src 'self' data:" + ("; media-src blob:; worker-src 'self' blob:" if holo else "") +
+            "; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
+        # The camera is only available to the hologram page; every other page is denied it.
+        resp.headers["Permissions-Policy"] = ("camera=(self), " if holo else "camera=(), ") + "microphone=(), geolocation=()"
         return resp
 
     def _session_ok(self, sid: str) -> bool:
@@ -436,6 +459,9 @@ class Hub:
         self.login_codes[code] = time.time() + LOGIN_CODE_TTL
         return web.json_response({"code": code, "expires_in": LOGIN_CODE_TTL})
 
+    async def _nothing(self, request):
+        return web.Response(status=204)
+
     async def _web_index(self, request):
         return web.Response(body=(WEB / "index.html").read_bytes(), content_type="text/html")
 
@@ -443,6 +469,89 @@ class Hub:
         name = request.path.lstrip("/")
         ctype = "application/javascript" if name.endswith(".js") else "text/css"
         return web.Response(body=(WEB / name).read_bytes(), content_type=ctype)
+
+    # ---- camera / microphone mode ------------------------------------------
+    def current_mode(self) -> str:
+        if self.mode != "idle" and time.time() > self.mode_until:
+            self._set_mode("idle", "expired")
+        return self.mode
+
+    def _set_mode(self, mode, why=""):
+        if mode != self.mode:
+            self.audit.write("mode_changed", mode=mode, previous=self.mode, why=why)
+        self.mode = mode
+        self.mode_until = time.time() + policy.MODE_TTL if mode != "idle" else 0.0
+
+    async def _mode_watch(self):
+        while True:
+            await asyncio.sleep(2)
+            self.current_mode()
+
+    async def _a_mode_get(self, request):
+        mode = self.current_mode()
+        return web.json_response({"mode": mode, "expires_in": max(0, int(self.mode_until - time.time())),
+                                  "hub_class": self.hub_class, "modes": sorted(policy.MODE_SENSORS)})
+
+    async def _a_mode_set(self, request):
+        b = await request.json()
+        mode = b.get("mode")
+        if mode not in policy.MODE_SENSORS:
+            return web.json_response({"error": "unknown mode"}, status=400)
+        for sensor in policy.MODE_SENSORS[mode]:
+            if not policy.sensor_allowed(self.hub_class, mode, sensor):
+                self.audit.write("mode_refused", mode=mode, sensor=sensor)
+                return web.json_response({"error": f"this device class ({self.hub_class}) may not use the {sensor}"}, status=403)
+        if mode == self.mode and mode != "idle":
+            self.mode_until = time.time() + policy.MODE_TTL      # renewal by the page, not logged
+        else:
+            self._set_mode(mode, "operator")
+        return await self._a_mode_get(request)
+
+    # ---- hologram page, vendored assets ---------------------------------------
+    async def _holo_page(self, request):
+        return web.Response(body=(WEB / "hologram" / "index.html").read_bytes(), content_type="text/html")
+
+    async def _holo_file(self, request):
+        name = request.match_info["name"]
+        f = (WEB / "hologram" / name).resolve()
+        if f.parent != (WEB / "hologram").resolve() or not f.is_file():
+            raise web.HTTPNotFound()
+        return web.Response(body=f.read_bytes(), content_type=_ctype(f))
+
+    async def _vendor_file(self, request):
+        root = (WEB / "vendor").resolve()
+        f = (root / request.match_info["path"]).resolve()
+        if root not in f.parents or not f.is_file():
+            raise web.HTTPNotFound()
+        return web.Response(body=f.read_bytes(), content_type=_ctype(f))
+
+    async def _a_vision(self, request):
+        from .. import vision_assets
+        return web.json_response({"installed": vision_assets.installed(WEB / "vendor"),
+                                  "face": (WEB / "vendor" / "models" / "face_landmarker.task").exists()})
+
+    # ---- gesture bindings ------------------------------------------------------
+    def gesture_map(self) -> dict:
+        from ..paths import read_json
+        saved = read_json(self.dir / "gestures.json")
+        try:
+            return policy.validate_gesture_map(saved) if saved else policy.validate_gesture_map(policy.DEFAULT_GESTURE_MAP)
+        except ValueError:
+            return policy.validate_gesture_map(policy.DEFAULT_GESTURE_MAP)
+
+    async def _a_gmap_get(self, request):
+        return web.json_response({"map": self.gesture_map(), "gestures": list(policy.GESTURES),
+                                  "choices": [c for c in policy.CATALOG if policy.bindable(c)]})
+
+    async def _a_gmap_set(self, request):
+        from ..paths import write_json
+        try:
+            m = policy.validate_gesture_map((await request.json()).get("map"))
+        except ValueError as e:
+            return web.json_response({"error": str(e)}, status=400)
+        write_json(self.dir / "gestures.json", m)
+        self.audit.write("gesture_map_changed")
+        return web.json_response({"map": m})
 
     async def _a_audit(self, request):
         path = self.dir / "audit.log"

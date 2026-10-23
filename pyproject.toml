@@ -22,4 +22,4 @@ include = ["jarvis*"]
 asyncio_mode = "auto"
 
 [tool.setuptools.package-data]
-"jarvis.hub" = ["web/*", "mobile_web/*"]
+"jarvis.hub" = ["web/*", "web/hologram/*", "web/vendor/**/*", "mobile_web/*"]

@@ -6,7 +6,6 @@ the browser signs it with the private key it can never export, and gets a short 
 """
 import base64
 import hmac
-import json
 import secrets
 import time
 import uuid

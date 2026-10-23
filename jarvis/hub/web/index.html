@@ -27,6 +27,20 @@
     <div id="devices"></div>
   </section>
   <section>
+    <h2>Camera &amp; hologram</h2>
+    <p class="hint">Camera and microphone are off unless you start a mode. The hub turns them off by itself after 5 minutes without activity.</p>
+    <div class="row">
+      <span class="name">Mode: <b id="mode-name">idle</b> <span id="mode-left" class="hint"></span></span>
+      <a class="btnlink" href="/hologram">Open hologram</a>
+      <button id="cam-off" class="danger" hidden>Turn camera off now</button>
+    </div>
+  </section>
+  <section>
+    <h2>Gesture actions</h2>
+    <div id="gestures"></div>
+    <button id="gesture-save">Save</button>
+  </section>
+  <section>
     <h2>Pair a new device</h2>
     <label>Type
       <select id="kind"><option value="app">Jarvis app / computer</option><option value="web">Phone browser</option></select>

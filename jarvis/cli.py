@@ -38,7 +38,7 @@ def _table(rows, cols):
 
 async def hub_serve(args):
     hub = Hub(args.home, host=args.host, pair_port=args.pair_port, ctl_port=args.ctl_port,
-              admin_port=args.admin_port, advertise=args.advertise)
+              admin_port=args.admin_port, advertise=args.advertise, hub_class=args.hub_class)
     await hub.start()
     print(f"hub running  pair:{hub.ports['pair']} control:{hub.ports['ctl']} admin(127.0.0.1):{hub.ports['admin']}")
     print(f"addresses: {', '.join(hub.addresses)}")
@@ -70,6 +70,8 @@ async def hub_cmd(args):
             webbrowser.open(url)
         except Exception:
             pass
+    elif c == "camera-off":
+        print(await _admin(args, "POST", "/admin/mode", {"mode": "idle"}))
     elif c == "pending":
         _table(await _admin(args, "GET", "/admin/pending"), ["id", "name", "platform", "class", "role", "sas", "ip"])
     elif c in ("approve", "reject"):
@@ -133,17 +135,22 @@ def build_parser():
     s.add_argument("--host", default="0.0.0.0")
     s.add_argument("--pair-port", type=int, default=8443)
     s.add_argument("--ctl-port", type=int, default=8444)
+    s.add_argument("--hub-class", choices=["laptop", "desktop", "other"], default="laptop",
+                   help="what this machine is; only laptops/desktops may use the camera")
     s.add_argument("--advertise", nargs="*", default=[], help="addresses to put in certificates and links (hotspot/overlay)")
     s = hub.add_parser("pair")
     s.add_argument("--role", default="phone", choices=["phone", "controller", "node"])
     s.add_argument("--host", nargs="*", help="override the addresses shown in the link")
     s.add_argument("--web", action="store_true", help="pair a phone browser instead of a Jarvis app")
-    for name in ("pending", "devices", "confirms", "dashboard"):
+    for name in ("pending", "devices", "confirms", "dashboard", "camera-off"):
         hub.add_parser(name)
     for name in ("approve", "reject", "revoke", "allow", "deny"):
         hub.add_parser(name).add_argument("id")
     s = hub.add_parser("audit")
     s.add_argument("-n", type=int, default=20)
+
+    vis = sub.add_parser("vision", help="gesture tracking assets").add_subparsers(dest="vis_cmd", required=True)
+    vis.add_parser("install", help="download and verify the hand-tracking files once (needs internet)")
 
     svc = sub.add_parser("service", help="start Jarvis automatically").add_subparsers(dest="svc_cmd", required=True)
     for name in ("install", "uninstall"):
@@ -185,6 +192,9 @@ def main(argv=None):
             asyncio.run(hub_serve(args))
         elif args.group == "hub":
             asyncio.run(hub_cmd(args))
+        elif args.group == "vision":
+            from . import vision_assets
+            vision_assets.main()
         elif args.group == "service":
             from . import service
             if args.svc_cmd == "install":

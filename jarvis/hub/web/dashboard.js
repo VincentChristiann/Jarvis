@@ -104,12 +104,47 @@ function renderAudit(a) {
   }
 }
 
+const GESTURE_LABELS = {swipe_right: "Swipe right", swipe_left: "Swipe left", swipe_up: "Swipe up", swipe_down: "Swipe down",
+  hold_open_palm: "Hold open palm", hold_fist: "Hold fist", hold_peace: "Hold two fingers", hold_point: "Hold pointing"};
+const PRESETS = [
+  ["— nothing —", null],
+  ["Next track", {cmd: "media.next", args: {}}], ["Previous track", {cmd: "media.previous", args: {}}],
+  ["Play / pause", {cmd: "media.play_pause", args: {}}], ["Mute", {cmd: "volume.mute", args: {}}],
+  ["Volume up", {cmd: "volume.step", args: {delta: 10}}], ["Volume down", {cmd: "volume.step", args: {delta: -10}}],
+];
+let gestureMap = null;
+
+async function loadGestures() {
+  const r = await api("GET", "/admin/gesture-map"); gestureMap = r.map;
+  const box = $("gestures"); box.replaceChildren();
+  for (const g of r.gestures) {
+    const sel = el("select", {id: "g-" + g});
+    PRESETS.forEach(([label, b], i) => sel.append(el("option", {value: i, textContent: label})));
+    const cur = r.map[g], idx = PRESETS.findIndex(([, b]) => (b === null && !cur) || (b && cur && b.cmd === cur.cmd && JSON.stringify(b.args) === JSON.stringify(cur.args)));
+    sel.value = idx < 0 ? 0 : idx;
+    box.append(el("div", {class: "row"}, el("span", {class: "name", textContent: GESTURE_LABELS[g] || g}), sel));
+  }
+}
+
+async function saveGestures() {
+  const map = {};
+  for (const g of Object.keys(gestureMap)) map[g] = PRESETS[+$("g-" + g).value][1];
+  const r = await api("POST", "/admin/gesture-map", {map});
+  toast(r.error ? "Not saved: " + r.error : "Gesture actions saved");
+}
+
+function renderMode(m) {
+  $("mode-name").textContent = m.mode;
+  $("mode-left").textContent = m.mode === "idle" ? "" : `(turns off in ${m.expires_in}s unless in use)`;
+  $("cam-off").hidden = m.mode === "idle";
+}
+
 async function refresh() {
   try {
-    const [devs, pend, conf, audit, grants] = await Promise.all([
+    const [devs, pend, conf, audit, grants, mode] = await Promise.all([
       api("GET", "/admin/devices"), api("GET", "/admin/pending"),
-      api("GET", "/admin/confirmations"), api("GET", "/admin/audit"), api("GET", "/admin/grants")]);
-    renderDevices(devs); renderPending(pend); renderConfirms(conf); renderAudit(audit); renderGrants(grants);
+      api("GET", "/admin/confirmations"), api("GET", "/admin/audit"), api("GET", "/admin/grants"), api("GET", "/admin/mode")]);
+    renderDevices(devs); renderPending(pend); renderConfirms(conf); renderAudit(audit); renderGrants(grants); renderMode(mode);
   } catch (e) { /* auth failure already shown */ }
 }
 
@@ -128,4 +163,6 @@ $("pair-btn").onclick = async () => {
   }, 1000);
 };
 
-refresh(); setInterval(refresh, 2000);
+$("cam-off").onclick = async () => { renderMode(await api("POST", "/admin/mode", {mode: "idle"})); toast("Camera off"); };
+$("gesture-save").onclick = saveGestures;
+loadGestures(); refresh(); setInterval(refresh, 2000);

@@ -26,7 +26,7 @@ def new_credentials():
 
 def wifi_qr_payload(ssid: str, password: str) -> str:
     """Standard Wi-Fi QR format understood by Android and iOS cameras."""
-    esc = lambda s: "".join("\\" + c if c in '\;,:"' else c for c in s)
+    esc = lambda s: "".join("\\" + c if c in '\\;,:"' else c for c in s)
     return f"WIFI:T:WPA;S:{esc(ssid)};P:{esc(password)};;"
 
 

@@ -1,5 +1,18 @@
 # Jarvis: Design Plan
 
+## Progress
+| Phase | Status |
+|---|---|
+| 1. Core, hub, pairing, mutual TLS, policy, audit | Done |
+| 2. Boot services, certificate renewal, hub dashboard | Done |
+| 2b. Everyday commands (media, volume, apps, files, remote input) + control windows | Done |
+| 2c. Phone dashboard (device-bound keys, touchpad, keyboard) | Done |
+| 3. Gestures + hologram (hand tracking, head-tracked 3D, cursor mode) | Done; needs tuning with real users |
+| 4. Voice (local speech-to-text / text-to-speech, phone mic streaming) | Not started |
+| 5. Natural language (local LLM -> catalog commands) | Not started |
+| 6. Native phone app, Windows hotspot automation, guided WireGuard remote access, hub failover | Not started |
+
+
 ## Goals
 - One agent (`jarvisd`) installed on every device, starting at boot.
 - Works with no internet. Devices link over a local network that Jarvis can create itself.

@@ -13,7 +13,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .backend import BackendError, clean_text, get_backend, parse_combo
+from .backend import clean_text, get_backend, parse_combo
 
 MAX_FILE = 4 * 1024 * 1024
 MAX_LIST = 500
